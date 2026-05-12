@@ -80,9 +80,17 @@
         </article>
 
         <article class="card">
-          <h2>Create web project</h2>
+          <h2>Create project</h2>
           <form method="post" action="/projects" class="stack">
             <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+            <label class="field">
+              <span>Project type</span>
+              <select name="project_type">
+                <option value="web" {{if eq .CreateForm.Type "web"}}selected{{end}}>Web (Caddy + subdomain)</option>
+                <option value="tcp" {{if eq .CreateForm.Type "tcp"}}selected{{end}}>TCP (published ports)</option>
+                <option value="udp" {{if eq .CreateForm.Type "udp"}}selected{{end}}>UDP (published ports)</option>
+              </select>
+            </label>
             <label class="field">
               <span>Name</span>
               <input type="text" name="name" value="{{.CreateForm.Name}}" required>
@@ -96,12 +104,16 @@
               <input type="text" name="image_ref" value="{{.CreateForm.ImageRef}}" placeholder="ghcr.io/owner/app:latest" required>
             </label>
             <label class="field">
-              <span>Subdomain</span>
-              <input type="text" name="subdomain" value="{{.CreateForm.Subdomain}}" placeholder="books" required>
+              <span>Subdomain (web only)</span>
+              <input type="text" name="subdomain" value="{{.CreateForm.Subdomain}}" placeholder="books">
             </label>
             <label class="field">
-              <span>Internal port</span>
-              <input type="number" name="internal_port" min="1" max="65535" value="{{.CreateForm.InternalPort}}" required>
+              <span>Internal port (web only)</span>
+              <input type="number" name="internal_port" min="1" max="65535" value="{{.CreateForm.InternalPort}}">
+            </label>
+            <label class="field">
+              <span>Published ports (TCP/UDP only)</span>
+              <textarea name="port_mappings" rows="4" placeholder="25565:25565&#10;8081:8080">{{.CreateForm.PortMappingsText}}</textarea>
             </label>
             <label class="checkbox">
               <input type="checkbox" name="watchtower_enabled" {{if .CreateForm.WatchtowerEnabled}}checked{{end}}>
@@ -119,7 +131,11 @@
       <section class="card">
         <div class="section-head">
           <h2>Projects</h2>
-          <p class="muted">Managed web projects deployed through Docker, Caddy, and Cloudflare.</p>
+          <p class="muted">Managed web and network projects deployed through Docker, Caddy, and Cloudflare where needed.</p>
+          <form method="post" action="/adopt" class="inline-form">
+            <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+            <button type="submit" class="secondary">Adopt existing containers</button>
+          </form>
         </div>
         {{if .Projects}}
         <div class="table-wrap">
@@ -127,7 +143,8 @@
             <thead>
               <tr>
                 <th>Name</th>
-                <th>URL</th>
+                <th>Type</th>
+                <th>Endpoint</th>
                 <th>Image</th>
                 <th>Status</th>
                 <th>Actions</th>
@@ -141,8 +158,13 @@
                   <div class="muted mono">{{.ContainerName}}</div>
                 </td>
                 <td>
-                  <div>{{if .FullDomain}}{{.FullDomain}}{{else}}{{.Subdomain}}{{end}}</div>
-                  <div class="muted mono">:{{.InternalPort}}</div>
+                  {{.Type}}
+                </td>
+                <td>
+                  <div>{{.EndpointSummary}}</div>
+                  {{if and (eq .Type "web") .InternalPort}}
+                  <div class="muted mono">container :{{.InternalPort}}</div>
+                  {{end}}
                 </td>
                 <td class="mono">{{.ImageRef}}</td>
                 <td>{{.Status}}</td>

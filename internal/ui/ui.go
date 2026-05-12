@@ -42,25 +42,31 @@ type ProjectFormData struct {
 	ID                string
 	Action            string
 	SubmitLabel       string
+	Type              string
 	Name              string
 	Slug              string
 	ImageRef          string
 	Subdomain         string
 	InternalPort      int
+	PortMappingsText  string
 	WatchtowerEnabled bool
 	EnvText           string
 	SlugReadOnly      bool
+	TypeReadOnly      bool
 }
 
 type ProjectListItem struct {
 	ID                string
 	Name              string
+	Type              string
 	Slug              string
 	ImageRef          string
 	Subdomain         string
 	FullDomain        string
 	ContainerName     string
 	InternalPort      int
+	PortMappingsText  string
+	EndpointSummary   string
 	WatchtowerEnabled bool
 	Status            string
 }

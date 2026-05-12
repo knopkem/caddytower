@@ -281,6 +281,23 @@ details summary {
   margin-bottom: 10px;
 }
 
+.log-output {
+  margin: 0;
+  padding: 16px;
+  border: 1px solid var(--panel-border);
+  border-radius: 14px;
+  background: rgba(11, 16, 32, 0.8);
+  color: var(--text);
+  min-height: 280px;
+  max-height: 480px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family:
+    ui-monospace, SFMono-Regular, SF Mono, Menlo, Consolas, "Liberation Mono",
+    monospace;
+}
+
 @media (max-width: 640px) {
   .shell {
     padding-top: 32px;

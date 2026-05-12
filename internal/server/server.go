@@ -1,6 +1,7 @@
 package server
 
 import (
+	"bufio"
 	"context"
 	"crypto/hmac"
 	"crypto/sha256"
@@ -10,6 +11,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	neturl "net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -80,8 +82,10 @@ func (s *Server) Router() http.Handler {
 		router.Post("/logout", s.handleLogout)
 		if s.projects != nil {
 			router.Post("/settings", s.handleSettingsSubmit)
+			router.Post("/adopt", s.handleAdoptProjects)
 			router.Post("/projects", s.handleProjectCreate)
 			router.Get("/projects/{projectID}", s.handleProjectPage)
+			router.Get("/projects/{projectID}/logs/stream", s.handleProjectLogsStream)
 			router.Post("/projects/{projectID}", s.handleProjectUpdate)
 			router.Post("/projects/{projectID}/databases", s.handleProjectDBAttach)
 			router.Post("/projects/{projectID}/databases/{attachmentID}/rotate", s.handleProjectDBRotate)
@@ -119,6 +123,7 @@ func (s *Server) handleRoot(w http.ResponseWriter, r *http.Request) {
 		}
 
 		s.renderDashboard(w, r, currentUser.Email, ui.ProjectFormData{
+			Type:              "web",
 			InternalPort:      3000,
 			WatchtowerEnabled: true,
 		}, "", r.URL.Query().Get("info"))
@@ -152,7 +157,10 @@ func (s *Server) renderDashboard(w http.ResponseWriter, r *http.Request, current
 		}
 	}
 
-	if createForm.InternalPort == 0 {
+	if createForm.Type == "" {
+		createForm.Type = "web"
+	}
+	if createForm.Type == "web" && createForm.InternalPort == 0 {
 		createForm.InternalPort = 3000
 	}
 
@@ -312,6 +320,7 @@ func (s *Server) handleSettingsSubmit(w http.ResponseWriter, r *http.Request) {
 	}, user.ID)
 	if err != nil {
 		s.renderDashboard(w, r, user.Email, ui.ProjectFormData{
+			Type:              "web",
 			InternalPort:      3000,
 			WatchtowerEnabled: true,
 		}, err.Error(), "")
@@ -331,19 +340,48 @@ func (s *Server) handleProjectCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	input, createForm, err := projectInputFromRequest(r, "")
+	input, createForm, err := projectInputFromRequest(r, "", "")
 	if err != nil {
 		s.renderDashboard(w, r, user.Email, createForm, err.Error(), "")
 		return
 	}
 
-	project, err := s.projects.CreateWebProject(r.Context(), input, user.ID)
+	project, err := s.projects.CreateProject(r.Context(), input, user.ID)
 	if err != nil {
 		s.renderDashboard(w, r, user.Email, createForm, err.Error(), "")
 		return
 	}
 
 	http.Redirect(w, r, "/projects/"+project.ID+"?info=Project+saved", http.StatusFound)
+}
+
+func (s *Server) handleAdoptProjects(w http.ResponseWriter, r *http.Request) {
+	user, ok := s.requireAuthenticated(w, r)
+	if !ok {
+		return
+	}
+	if !s.auth.ValidateCSRF(r) {
+		http.Error(w, "invalid csrf token", http.StatusForbidden)
+		return
+	}
+
+	adopted, err := s.projects.AdoptExisting(r.Context(), user.ID)
+	if err != nil {
+		s.renderDashboard(w, r, user.Email, ui.ProjectFormData{
+			Type:              "web",
+			InternalPort:      3000,
+			WatchtowerEnabled: true,
+		}, err.Error(), "")
+		return
+	}
+
+	message := "No adoptable projects found"
+	if len(adopted) == 1 {
+		message = "Adopted 1 existing project"
+	} else if len(adopted) > 1 {
+		message = fmt.Sprintf("Adopted %d existing projects", len(adopted))
+	}
+	http.Redirect(w, r, "/?info="+neturl.QueryEscape(message), http.StatusFound)
 }
 
 func (s *Server) handleProjectPage(w http.ResponseWriter, r *http.Request) {
@@ -362,14 +400,17 @@ func (s *Server) handleProjectPage(w http.ResponseWriter, r *http.Request) {
 		ID:                project.ID,
 		Action:            "/projects/" + project.ID,
 		SubmitLabel:       "Save and deploy",
+		Type:              project.Type,
 		Name:              project.Name,
 		Slug:              project.Slug,
 		ImageRef:          project.ImageRef,
 		Subdomain:         project.Subdomain,
 		InternalPort:      project.InternalPort,
+		PortMappingsText:  projects.PortMappingsText(project.Ports),
 		WatchtowerEnabled: project.WatchtowerEnabled,
 		EnvText:           project.EnvText,
 		SlugReadOnly:      true,
+		TypeReadOnly:      true,
 	}, "", r.URL.Query().Get("info"))
 }
 
@@ -384,13 +425,19 @@ func (s *Server) handleProjectUpdate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	projectID := chi.URLParam(r, "projectID")
-	input, formData, err := projectInputFromRequest(r, projectID)
+	currentProject, _, err := s.projects.GetProject(r.Context(), projectID)
+	if err != nil {
+		s.renderProjectError(w, err)
+		return
+	}
+
+	input, formData, err := projectInputFromRequest(r, projectID, currentProject.Type)
 	if err != nil {
 		s.renderProjectWithFallback(w, r, user.Email, projectID, formData, err.Error(), "")
 		return
 	}
 
-	project, err := s.projects.UpdateWebProject(r.Context(), input, user.ID)
+	project, err := s.projects.UpdateProject(r.Context(), input, user.ID)
 	if err != nil {
 		s.renderProjectWithFallback(w, r, user.Email, projectID, formData, err.Error(), "")
 		return
@@ -506,6 +553,7 @@ func (s *Server) handleProjectDelete(w http.ResponseWriter, r *http.Request) {
 
 	if err := s.projects.DeleteProject(r.Context(), chi.URLParam(r, "projectID"), user.ID); err != nil {
 		s.renderDashboard(w, r, user.Email, ui.ProjectFormData{
+			Type:              "web",
 			InternalPort:      3000,
 			WatchtowerEnabled: true,
 		}, err.Error(), "")
@@ -513,6 +561,63 @@ func (s *Server) handleProjectDelete(w http.ResponseWriter, r *http.Request) {
 	}
 
 	http.Redirect(w, r, "/?info=Project+deleted", http.StatusFound)
+}
+
+func (s *Server) handleProjectLogsStream(w http.ResponseWriter, r *http.Request) {
+	if s.auth == nil || s.projects == nil {
+		http.NotFound(w, r)
+		return
+	}
+
+	_, ok, err := s.currentUser(w, r)
+	if err != nil {
+		s.logger.Error("authenticate log stream", "error", err)
+		http.Error(w, "failed to authenticate request", http.StatusInternalServerError)
+		return
+	}
+	if !ok {
+		http.Error(w, "authentication required", http.StatusUnauthorized)
+		return
+	}
+
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		http.Error(w, "streaming unsupported", http.StatusInternalServerError)
+		return
+	}
+
+	tail := 200
+	if rawTail := strings.TrimSpace(r.URL.Query().Get("tail")); rawTail != "" {
+		if parsedTail, err := strconv.Atoi(rawTail); err == nil && parsedTail > 0 {
+			tail = parsedTail
+		}
+	}
+
+	reader, err := s.projects.StreamProjectLogs(r.Context(), chi.URLParam(r, "projectID"), tail)
+	if err != nil {
+		s.renderProjectError(w, err)
+		return
+	}
+	defer reader.Close()
+
+	headers := w.Header()
+	headers.Set("Content-Type", "text/event-stream")
+	headers.Set("Cache-Control", "no-cache")
+	headers.Set("Connection", "keep-alive")
+	headers.Set("X-Accel-Buffering", "no")
+
+	scanner := bufio.NewScanner(reader)
+	scanner.Buffer(make([]byte, 0, 16*1024), 1024*1024)
+	for scanner.Scan() {
+		line := scanner.Text()
+		if _, err := fmt.Fprintf(w, "data: %s\n\n", line); err != nil {
+			return
+		}
+		flusher.Flush()
+	}
+	if err := scanner.Err(); err != nil && !errors.Is(err, context.Canceled) {
+		s.logger.Error("stream project logs", "project_id", chi.URLParam(r, "projectID"), "error", err)
+	}
 }
 
 func (s *Server) handleDeployWebhook(w http.ResponseWriter, r *http.Request) {
@@ -703,14 +808,17 @@ func (s *Server) renderProjectWithFallback(w http.ResponseWriter, r *http.Reques
 			ID:                project.ID,
 			Action:            "/projects/" + project.ID,
 			SubmitLabel:       "Save and deploy",
+			Type:              project.Type,
 			Name:              project.Name,
 			Slug:              project.Slug,
 			ImageRef:          project.ImageRef,
 			Subdomain:         project.Subdomain,
 			InternalPort:      project.InternalPort,
+			PortMappingsText:  projects.PortMappingsText(project.Ports),
 			WatchtowerEnabled: project.WatchtowerEnabled,
 			EnvText:           project.EnvText,
 			SlugReadOnly:      true,
+			TypeReadOnly:      true,
 		}
 	}
 	s.renderProjectPage(w, r, currentUser, project, form, errorMessage, infoMessage)
@@ -725,69 +833,116 @@ func (s *Server) renderProjectError(w http.ResponseWriter, err error) {
 	http.Error(w, "failed to load project", http.StatusInternalServerError)
 }
 
-func projectInputFromRequest(r *http.Request, projectID string) (projects.WebProjectInput, ui.ProjectFormData, error) {
-	internalPort, err := strconv.Atoi(strings.TrimSpace(r.FormValue("internal_port")))
-	if err != nil {
-		form := ui.ProjectFormData{
-			ID:                projectID,
-			Action:            "/projects/" + projectID,
-			SubmitLabel:       "Save and deploy",
-			Name:              strings.TrimSpace(r.FormValue("name")),
-			Slug:              strings.TrimSpace(r.FormValue("slug")),
-			ImageRef:          strings.TrimSpace(r.FormValue("image_ref")),
-			Subdomain:         strings.TrimSpace(r.FormValue("subdomain")),
-			EnvText:           r.FormValue("env_text"),
-			WatchtowerEnabled: projects.ParseBoolCheckbox(r.FormValue("watchtower_enabled")),
-			SlugReadOnly:      projectID != "",
+func projectInputFromRequest(r *http.Request, projectID, fixedType string) (projects.WebProjectInput, ui.ProjectFormData, error) {
+	projectType := strings.TrimSpace(strings.ToLower(fixedType))
+	if projectType == "" {
+		projectType = strings.TrimSpace(strings.ToLower(r.FormValue("project_type")))
+	}
+	if projectType == "" {
+		projectType = "web"
+	}
+
+	internalPort := 0
+	internalPortValue := strings.TrimSpace(r.FormValue("internal_port"))
+	if internalPortValue != "" {
+		parsedPort, err := strconv.Atoi(internalPortValue)
+		if err != nil {
+			form := projectFormDataFromRequest(r, projectID, projectType)
+			form.TypeReadOnly = fixedType != ""
+			return projects.WebProjectInput{}, form, fmt.Errorf("internal port must be a number")
 		}
-		return projects.WebProjectInput{}, form, fmt.Errorf("internal port must be a number")
+		internalPort = parsedPort
 	}
 
 	input := projects.WebProjectInput{
+		Type:              projectType,
 		ID:                projectID,
 		Name:              strings.TrimSpace(r.FormValue("name")),
 		Slug:              strings.TrimSpace(r.FormValue("slug")),
 		ImageRef:          strings.TrimSpace(r.FormValue("image_ref")),
 		Subdomain:         strings.TrimSpace(r.FormValue("subdomain")),
 		InternalPort:      internalPort,
+		PortMappingsText:  r.FormValue("port_mappings"),
 		WatchtowerEnabled: projects.ParseBoolCheckbox(r.FormValue("watchtower_enabled")),
 		EnvText:           r.FormValue("env_text"),
 	}
 
-	form := ui.ProjectFormData{
-		ID:                projectID,
-		Action:            "/projects/" + projectID,
-		SubmitLabel:       "Save and deploy",
-		Name:              input.Name,
-		Slug:              input.Slug,
-		ImageRef:          input.ImageRef,
-		Subdomain:         input.Subdomain,
-		InternalPort:      input.InternalPort,
-		WatchtowerEnabled: input.WatchtowerEnabled,
-		EnvText:           input.EnvText,
-		SlugReadOnly:      projectID != "",
-	}
-	if projectID == "" {
-		form.Action = "/projects"
-		form.SubmitLabel = "Create and deploy"
-	}
-
+	form := projectFormDataFromInput(input, projectID)
+	form.TypeReadOnly = fixedType != ""
 	return input, form, nil
 }
 
 func projectListItem(project projects.Project) ui.ProjectListItem {
+	portMappings := strings.ReplaceAll(projects.PortMappingsText(project.Ports), "\n", ", ")
 	return ui.ProjectListItem{
 		ID:                project.ID,
 		Name:              project.Name,
+		Type:              project.Type,
 		Slug:              project.Slug,
 		ImageRef:          project.ImageRef,
 		Subdomain:         project.Subdomain,
 		FullDomain:        project.FullDomain,
 		ContainerName:     project.ContainerName,
 		InternalPort:      project.InternalPort,
+		PortMappingsText:  portMappings,
+		EndpointSummary:   projectEndpointSummary(project),
 		WatchtowerEnabled: project.WatchtowerEnabled,
 		Status:            project.Status,
 	}
+}
+
+func projectFormDataFromRequest(r *http.Request, projectID, projectType string) ui.ProjectFormData {
+	input := projects.WebProjectInput{
+		Type:              projectType,
+		ID:                projectID,
+		Name:              strings.TrimSpace(r.FormValue("name")),
+		Slug:              strings.TrimSpace(r.FormValue("slug")),
+		ImageRef:          strings.TrimSpace(r.FormValue("image_ref")),
+		Subdomain:         strings.TrimSpace(r.FormValue("subdomain")),
+		PortMappingsText:  r.FormValue("port_mappings"),
+		WatchtowerEnabled: projects.ParseBoolCheckbox(r.FormValue("watchtower_enabled")),
+		EnvText:           r.FormValue("env_text"),
+	}
+	if internalPort, err := strconv.Atoi(strings.TrimSpace(r.FormValue("internal_port"))); err == nil {
+		input.InternalPort = internalPort
+	}
+	return projectFormDataFromInput(input, projectID)
+}
+
+func projectFormDataFromInput(input projects.WebProjectInput, projectID string) ui.ProjectFormData {
+	form := ui.ProjectFormData{
+		ID:                projectID,
+		Action:            "/projects/" + projectID,
+		SubmitLabel:       "Save and deploy",
+		Type:              input.Type,
+		Name:              input.Name,
+		Slug:              input.Slug,
+		ImageRef:          input.ImageRef,
+		Subdomain:         input.Subdomain,
+		InternalPort:      input.InternalPort,
+		PortMappingsText:  input.PortMappingsText,
+		WatchtowerEnabled: input.WatchtowerEnabled,
+		EnvText:           input.EnvText,
+		SlugReadOnly:      projectID != "",
+	}
+	if form.Type == "" {
+		form.Type = "web"
+	}
+	if projectID == "" {
+		form.Action = "/projects"
+		form.SubmitLabel = "Create and deploy"
+	}
+	return form
+}
+
+func projectEndpointSummary(project projects.Project) string {
+	if project.Type == "web" {
+		if project.FullDomain != "" {
+			return project.FullDomain
+		}
+		return project.Subdomain
+	}
+	return strings.ReplaceAll(projects.PortMappingsText(project.Ports), "\n", ", ")
 }
 
 func validWebhookSignature(secret, provided string, payload []byte) bool {

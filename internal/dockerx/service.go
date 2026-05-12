@@ -18,6 +18,7 @@ import (
 	"github.com/docker/docker/api/types/network"
 	"github.com/docker/docker/client"
 	"github.com/docker/docker/errdefs"
+	"github.com/docker/docker/pkg/stdcopy"
 	"github.com/docker/go-connections/nat"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 )
@@ -75,12 +76,14 @@ type ContainerSummary struct {
 }
 
 type ContainerInspect struct {
-	ID       string
-	Name     string
-	Image    string
-	Running  bool
-	Networks []string
-	Labels   map[string]string
+	ID             string
+	Name           string
+	Image          string
+	Running        bool
+	Networks       []string
+	Labels         map[string]string
+	Env            []string
+	PublishedPorts []PortBinding
 }
 
 func New(api apiClient) *Service {
@@ -133,35 +136,18 @@ func (s *Service) ListContainersByLabel(ctx context.Context, key, value string) 
 		args.Add("label", key+"="+value)
 	}
 
-	containers, err := s.api.ContainerList(ctx, container.ListOptions{
-		All:     true,
-		Filters: args,
-	})
+	summaries, err := s.listContainers(ctx, args)
 	if err != nil {
 		return nil, fmt.Errorf("list containers by label %s: %w", key, err)
 	}
+	return summaries, nil
+}
 
-	summaries := make([]ContainerSummary, 0, len(containers))
-	for _, item := range containers {
-		name := ""
-		if len(item.Names) > 0 {
-			name = strings.TrimPrefix(item.Names[0], "/")
-		}
-
-		summaries = append(summaries, ContainerSummary{
-			ID:     item.ID,
-			Name:   name,
-			Image:  item.Image,
-			State:  item.State,
-			Status: item.Status,
-			Labels: mapsClone(item.Labels),
-		})
+func (s *Service) ListContainers(ctx context.Context) ([]ContainerSummary, error) {
+	summaries, err := s.listContainers(ctx, filters.NewArgs())
+	if err != nil {
+		return nil, fmt.Errorf("list containers: %w", err)
 	}
-
-	sort.Slice(summaries, func(i, j int) bool {
-		return summaries[i].Name < summaries[j].Name
-	})
-
 	return summaries, nil
 }
 
@@ -178,12 +164,14 @@ func (s *Service) InspectContainer(ctx context.Context, containerName string) (C
 	sort.Strings(networks)
 
 	return ContainerInspect{
-		ID:       item.ID,
-		Name:     strings.TrimPrefix(item.Name, "/"),
-		Image:    item.Config.Image,
-		Running:  item.ContainerJSONBase.State.Running,
-		Networks: networks,
-		Labels:   mapsClone(item.Config.Labels),
+		ID:             item.ID,
+		Name:           strings.TrimPrefix(item.Name, "/"),
+		Image:          item.Config.Image,
+		Running:        item.ContainerJSONBase.State.Running,
+		Networks:       networks,
+		Labels:         mapsClone(item.Config.Labels),
+		Env:            append([]string(nil), item.Config.Env...),
+		PublishedPorts: publishedPortsFromInspect(item.NetworkSettings.Ports),
 	}, nil
 }
 
@@ -313,7 +301,17 @@ func (s *Service) StreamLogs(ctx context.Context, containerName string, tail int
 		return nil, fmt.Errorf("stream logs for %s: %w", containerName, err)
 	}
 
-	return reader, nil
+	pipeReader, pipeWriter := io.Pipe()
+	go func() {
+		defer reader.Close()
+		defer pipeWriter.Close()
+
+		if _, err := stdcopy.StdCopy(pipeWriter, pipeWriter, reader); err != nil && err != io.EOF {
+			_ = pipeWriter.CloseWithError(fmt.Errorf("demultiplex logs for %s: %w", containerName, err))
+		}
+	}()
+
+	return pipeReader, nil
 }
 
 func mapsClone[K comparable, V any](input map[K]V) map[K]V {
@@ -327,6 +325,38 @@ func mapsClone[K comparable, V any](input map[K]V) map[K]V {
 	}
 
 	return cloned
+}
+
+func (s *Service) listContainers(ctx context.Context, args filters.Args) ([]ContainerSummary, error) {
+	containers, err := s.api.ContainerList(ctx, container.ListOptions{
+		All:     true,
+		Filters: args,
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	summaries := make([]ContainerSummary, 0, len(containers))
+	for _, item := range containers {
+		name := ""
+		if len(item.Names) > 0 {
+			name = strings.TrimPrefix(item.Names[0], "/")
+		}
+
+		summaries = append(summaries, ContainerSummary{
+			ID:     item.ID,
+			Name:   name,
+			Image:  item.Image,
+			State:  item.State,
+			Status: item.Status,
+			Labels: mapsClone(item.Labels),
+		})
+	}
+
+	sort.Slice(summaries, func(i, j int) bool {
+		return summaries[i].Name < summaries[j].Name
+	})
+	return summaries, nil
 }
 
 func envSlice(values map[string]string) []string {
@@ -392,6 +422,35 @@ func portBindings(list []PortBinding) nat.PortMap {
 		})
 	}
 	return result
+}
+
+func publishedPortsFromInspect(ports nat.PortMap) []PortBinding {
+	if len(ports) == 0 {
+		return nil
+	}
+
+	bindings := make([]PortBinding, 0)
+	for port, exposed := range ports {
+		for _, binding := range exposed {
+			bindings = append(bindings, PortBinding{
+				ContainerPort: port.Port(),
+				HostPort:      binding.HostPort,
+				HostIP:        binding.HostIP,
+				Protocol:      port.Proto(),
+			})
+		}
+	}
+
+	sort.Slice(bindings, func(i, j int) bool {
+		if bindings[i].Protocol != bindings[j].Protocol {
+			return bindings[i].Protocol < bindings[j].Protocol
+		}
+		if bindings[i].HostPort != bindings[j].HostPort {
+			return bindings[i].HostPort < bindings[j].HostPort
+		}
+		return bindings[i].ContainerPort < bindings[j].ContainerPort
+	})
+	return bindings
 }
 
 func mustPort(port, protocol string) nat.Port {

@@ -4,7 +4,9 @@ import (
 	"context"
 	"crypto/hmac"
 	"crypto/sha256"
+	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -179,6 +181,77 @@ func TestDeployWebhookRedeploysProject(t *testing.T) {
 	}
 }
 
+func TestProjectLogsStreamRequiresAuthAndStreams(t *testing.T) {
+	t.Parallel()
+
+	webUI, err := ui.New()
+	if err != nil {
+		t.Fatalf("ui.New() error = %v", err)
+	}
+
+	stateStore := openServerTestStore(t)
+	authService := auth.New(stateStore, nil, "http://localhost:8080")
+	fixedNow := time.Date(2026, 5, 12, 7, 0, 0, 0, time.UTC)
+	authService.SetNow(func() time.Time { return fixedNow })
+	enrollment, err := authService.GenerateEnrollment("admin@example.com")
+	if err != nil {
+		t.Fatalf("GenerateEnrollment() error = %v", err)
+	}
+	code, err := totp.GenerateCodeCustom(enrollment.Secret, fixedNow, totp.ValidateOpts{
+		Period:    30,
+		Skew:      1,
+		Digits:    otp.DigitsSix,
+		Algorithm: otp.AlgorithmSHA1,
+	})
+	if err != nil {
+		t.Fatalf("GenerateCodeCustom() error = %v", err)
+	}
+	token, _, err := authService.CreateInitialUser(context.Background(), "admin@example.com", "super-secure-password", "super-secure-password", enrollment.Secret, code, "127.0.0.1", "test-agent")
+	if err != nil {
+		t.Fatalf("CreateInitialUser() error = %v", err)
+	}
+
+	projectService := projects.New(config.Config{
+		HTTPAddr:      ":8080",
+		PublicBaseURL: "http://localhost:8080",
+		DataDir:       t.TempDir(),
+		CaddyAdminURL: "http://shared-caddy:2019",
+		RootDomain:    "example.com",
+	}, stateStore, nil, &serverTestDocker{logContent: "alpha\nbeta\n"}, &serverTestCaddy{}, newNoopLogger())
+
+	project, err := projectService.CreateWebProject(context.Background(), projects.WebProjectInput{
+		Name:         "Books",
+		Slug:         "books",
+		ImageRef:     "ghcr.io/example/books:latest",
+		Subdomain:    "books",
+		InternalPort: 3000,
+	}, "")
+	if err != nil {
+		t.Fatalf("CreateWebProject() error = %v", err)
+	}
+
+	srv := New(config.Config{
+		HTTPAddr:      ":8080",
+		PublicBaseURL: "http://localhost:8080",
+		DataDir:       t.TempDir(),
+		CaddyAdminURL: "http://shared-caddy:2019",
+		RootDomain:    "example.com",
+	}, webUI, newNoopLogger(), version.Info{Version: "test"}, stateStore, authService, projectService)
+
+	req := httptest.NewRequest(http.MethodGet, "/projects/"+project.ID+"/logs/stream", nil)
+	req.AddCookie(&http.Cookie{Name: authService.SessionCookieName(), Value: token})
+	rec := httptest.NewRecorder()
+
+	srv.Router().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+	if !strings.Contains(rec.Body.String(), "data: alpha") || !strings.Contains(rec.Body.String(), "data: beta") {
+		t.Fatalf("body = %q", rec.Body.String())
+	}
+}
+
 func openServerTestStore(t *testing.T) *store.Store {
 	t.Helper()
 
@@ -199,7 +272,7 @@ func openServerTestStore(t *testing.T) *store.Store {
 	return stateStore
 }
 
-type serverTestDocker struct{}
+type serverTestDocker struct{ logContent string }
 
 func (serverTestDocker) PullImage(context.Context, string) error { return nil }
 func (serverTestDocker) RecreateContainer(_ context.Context, spec dockerx.ContainerSpec) (dockerx.ContainerInspect, error) {
@@ -211,10 +284,19 @@ func (serverTestDocker) InspectContainer(context.Context, string) (dockerx.Conta
 func (serverTestDocker) ListContainersByLabel(context.Context, string, string) ([]dockerx.ContainerSummary, error) {
 	return nil, nil
 }
+func (serverTestDocker) ListContainers(context.Context) ([]dockerx.ContainerSummary, error) {
+	return nil, nil
+}
 func (serverTestDocker) RemoveContainer(context.Context, string) error { return nil }
+func (d serverTestDocker) StreamLogs(context.Context, string, int) (io.ReadCloser, error) {
+	return io.NopCloser(strings.NewReader(d.logContent)), nil
+}
 
 type serverTestCaddy struct{}
 
+func (serverTestCaddy) GetConfig(context.Context) (json.RawMessage, error) {
+	return json.RawMessage(`{}`), nil
+}
 func (serverTestCaddy) ReconcileManagedRoutes(context.Context, []caddyadmin.HTTPRoute, []string) (bool, error) {
 	return true, nil
 }

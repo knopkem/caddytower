@@ -162,3 +162,34 @@ func TestMergeManagedRoutesPreservesUnmanagedHosts(t *testing.T) {
 		t.Fatalf("route count = %d", len(routes))
 	}
 }
+
+func TestExtractHTTPRoutesReadsReverseProxyHosts(t *testing.T) {
+	t.Parallel()
+
+	raw := []byte(`{
+		"apps": {
+			"http": {
+				"servers": {
+					"srv0": {
+						"routes": [
+							{"match":[{"host":["books.example.com"]}],"handle":[{"handler":"reverse_proxy","upstreams":[{"dial":"books:3000"}]}],"terminal":true},
+							{"match":[{"host":["ignored.example.com"]}],"handle":[{"handler":"static_response"}],"terminal":true}
+						]
+					}
+				}
+			}
+		}
+	}`)
+
+	routes, err := ExtractHTTPRoutes(raw)
+	if err != nil {
+		t.Fatalf("ExtractHTTPRoutes() error = %v", err)
+	}
+
+	if len(routes) != 1 {
+		t.Fatalf("route count = %d", len(routes))
+	}
+	if routes[0].Host != "books.example.com" || routes[0].Upstreams[0] != "books:3000" {
+		t.Fatalf("routes = %#v", routes)
+	}
+}

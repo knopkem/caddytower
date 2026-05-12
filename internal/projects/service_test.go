@@ -2,8 +2,10 @@ package projects
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"log/slog"
+	"strings"
 	"testing"
 
 	"caddytower/internal/caddyadmin"
@@ -117,6 +119,40 @@ func TestDeleteProjectRemovesManagedResources(t *testing.T) {
 	}
 	if cloudflareFactory.client.deleteCount != 1 {
 		t.Fatalf("deleteCount = %d", cloudflareFactory.client.deleteCount)
+	}
+}
+
+func TestCreateTCPProjectPublishesPortsWithoutCaddy(t *testing.T) {
+	t.Parallel()
+
+	stateStore := openProjectsStore(t)
+	docker := &fakeDocker{}
+	caddy := &fakeCaddy{}
+	svc := New(config.Config{}, stateStore, nil, docker, caddy, slog.New(slog.NewTextHandler(io.Discard, nil)))
+
+	project, err := svc.CreateProject(context.Background(), WebProjectInput{
+		Type:              "tcp",
+		Name:              "Netserver",
+		Slug:              "netserver",
+		ImageRef:          "ghcr.io/example/netserver:latest",
+		PortMappingsText:  "25565:25565\n25566:25566",
+		WatchtowerEnabled: true,
+	}, "")
+	if err != nil {
+		t.Fatalf("CreateProject() error = %v", err)
+	}
+
+	if project.Type != "tcp" {
+		t.Fatalf("project.Type = %q", project.Type)
+	}
+	if len(project.Ports) != 2 {
+		t.Fatalf("ports = %#v", project.Ports)
+	}
+	if len(docker.lastSpec.PublishedPorts) != 2 {
+		t.Fatalf("published ports = %#v", docker.lastSpec.PublishedPorts)
+	}
+	if len(caddy.managedHosts) != 0 {
+		t.Fatalf("managed hosts = %#v", caddy.managedHosts)
 	}
 }
 
@@ -234,6 +270,83 @@ func TestRedeployProjectByWebhookUsesSlug(t *testing.T) {
 	}
 }
 
+func TestStreamProjectLogsUsesContainerName(t *testing.T) {
+	t.Parallel()
+
+	stateStore := openProjectsStore(t)
+	docker := &fakeDocker{logContent: "hello\nworld\n"}
+	caddy := &fakeCaddy{}
+	svc := New(config.Config{RootDomain: "example.com"}, stateStore, nil, docker, caddy, slog.New(slog.NewTextHandler(io.Discard, nil)))
+
+	project, err := svc.CreateWebProject(context.Background(), WebProjectInput{
+		Name:         "Books",
+		Slug:         "books",
+		ImageRef:     "ghcr.io/example/books:latest",
+		Subdomain:    "books",
+		InternalPort: 3000,
+	}, "")
+	if err != nil {
+		t.Fatalf("CreateWebProject() error = %v", err)
+	}
+
+	reader, err := svc.StreamProjectLogs(context.Background(), project.ID, 50)
+	if err != nil {
+		t.Fatalf("StreamProjectLogs() error = %v", err)
+	}
+	defer reader.Close()
+
+	data, err := io.ReadAll(reader)
+	if err != nil {
+		t.Fatalf("ReadAll() error = %v", err)
+	}
+
+	if string(data) != "hello\nworld\n" {
+		t.Fatalf("logs = %q", string(data))
+	}
+}
+
+func TestAdoptExistingImportsWebContainer(t *testing.T) {
+	t.Parallel()
+
+	stateStore := openProjectsStore(t)
+	docker := &fakeDocker{
+		containers: []dockerx.ContainerSummary{
+			{Name: "cameos-editor", Image: "ghcr.io/example/cameos:latest"},
+		},
+		inspectByName: map[string]dockerx.ContainerInspect{
+			"cameos-editor": {
+				Name:  "cameos-editor",
+				Image: "ghcr.io/example/cameos:latest",
+				Env:   []string{"APP_ENV=prod"},
+			},
+		},
+	}
+	caddy := &fakeCaddy{
+		config: json.RawMessage(`{
+			"apps": {"http": {"servers": {"srv0": {"routes": [
+				{"match":[{"host":["cameos.example.com"]}],"handle":[{"handler":"reverse_proxy","upstreams":[{"dial":"cameos-editor:8080"}]}],"terminal":true}
+			]}}}}
+		}`),
+	}
+	svc := New(config.Config{}, stateStore, nil, docker, caddy, slog.New(slog.NewTextHandler(io.Discard, nil)))
+
+	if err := svc.SaveSettings(context.Background(), SettingsInput{RootDomain: "example.com"}, ""); err != nil {
+		t.Fatalf("SaveSettings() error = %v", err)
+	}
+
+	adopted, err := svc.AdoptExisting(context.Background(), "")
+	if err != nil {
+		t.Fatalf("AdoptExisting() error = %v", err)
+	}
+
+	if len(adopted) != 1 {
+		t.Fatalf("adopted = %#v", adopted)
+	}
+	if adopted[0].Type != "web" || adopted[0].Subdomain != "cameos" || adopted[0].InternalPort != 8080 {
+		t.Fatalf("project = %#v", adopted[0])
+	}
+}
+
 func openProjectsStore(t *testing.T) *store.Store {
 	t.Helper()
 
@@ -253,11 +366,16 @@ func openProjectsStore(t *testing.T) *store.Store {
 type fakeDocker struct {
 	recreateCount int
 	removeCount   int
+	lastSpec      dockerx.ContainerSpec
+	logContent    string
+	containers    []dockerx.ContainerSummary
+	inspectByName map[string]dockerx.ContainerInspect
 }
 
 func (f *fakeDocker) PullImage(context.Context, string) error { return nil }
 func (f *fakeDocker) RecreateContainer(_ context.Context, spec dockerx.ContainerSpec) (dockerx.ContainerInspect, error) {
 	f.recreateCount++
+	f.lastSpec = spec
 	return dockerx.ContainerInspect{
 		ID:      uuid.NewString(),
 		Name:    spec.Name,
@@ -265,21 +383,37 @@ func (f *fakeDocker) RecreateContainer(_ context.Context, spec dockerx.Container
 		Running: true,
 	}, nil
 }
-func (f *fakeDocker) InspectContainer(context.Context, string) (dockerx.ContainerInspect, error) {
+func (f *fakeDocker) InspectContainer(_ context.Context, name string) (dockerx.ContainerInspect, error) {
+	if inspect, ok := f.inspectByName[name]; ok {
+		return inspect, nil
+	}
 	return dockerx.ContainerInspect{Running: true}, nil
 }
 func (f *fakeDocker) ListContainersByLabel(context.Context, string, string) ([]dockerx.ContainerSummary, error) {
 	return nil, nil
 }
+func (f *fakeDocker) ListContainers(context.Context) ([]dockerx.ContainerSummary, error) {
+	return append([]dockerx.ContainerSummary(nil), f.containers...), nil
+}
 func (f *fakeDocker) RemoveContainer(context.Context, string) error {
 	f.removeCount++
 	return nil
 }
+func (f *fakeDocker) StreamLogs(context.Context, string, int) (io.ReadCloser, error) {
+	return io.NopCloser(strings.NewReader(f.logContent)), nil
+}
 
 type fakeCaddy struct {
 	managedHosts []string
+	config       json.RawMessage
 }
 
+func (f *fakeCaddy) GetConfig(context.Context) (json.RawMessage, error) {
+	if len(f.config) != 0 {
+		return f.config, nil
+	}
+	return json.RawMessage(`{}`), nil
+}
 func (f *fakeCaddy) ReconcileManagedRoutes(_ context.Context, routes []caddyadmin.HTTPRoute, managedHosts []string) (bool, error) {
 	f.managedHosts = append([]string(nil), managedHosts...)
 	return true, nil

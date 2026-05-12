@@ -11,8 +11,11 @@ This repository currently contains:
 - First-user bootstrap, password login, TOTP, sessions, and CSRF protection
 - Deployment settings for shared Caddy and Cloudflare DNS
 - Web project CRUD with Docker reconciliation and Caddy route management
+- TCP and UDP project support with published host-port mappings
 - Shared Postgres and MariaDB attachments with per-project credentials
 - HMAC-signed deploy webhooks for GitHub Actions
+- Live per-project log streaming in the admin UI
+- Existing-container adoption from Docker + current Caddy routes
 - Multi-stage distroless Docker image
 - GitHub Actions workflow for test/build/push to GHCR
 
@@ -65,6 +68,7 @@ The container image overrides `CADDYTOWER_DATA_DIR` to `/data`.
 - `/` — scaffold landing page
 - `/setup` — first-admin bootstrap
 - `/login` — password + TOTP login
+- `/projects/{projectID}/logs/stream` — authenticated live log stream (SSE)
 - `/api/webhooks/deploy/{slug}` — signed redeploy webhook
 - `/healthz` — liveness probe
 - `/readyz` — readiness probe

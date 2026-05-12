@@ -331,6 +331,62 @@ func MergeManagedRoutes(current json.RawMessage, routes []HTTPRoute, managedHost
 	return json.Marshal(root)
 }
 
+func ExtractHTTPRoutes(current json.RawMessage) ([]HTTPRoute, error) {
+	if len(bytes.TrimSpace(current)) == 0 {
+		return nil, nil
+	}
+
+	var decoded Config
+	if err := json.Unmarshal(current, &decoded); err != nil {
+		return nil, fmt.Errorf("unmarshal caddy config: %w", err)
+	}
+
+	server, ok := decoded.Apps.HTTP.Servers[defaultServerName]
+	if !ok {
+		return nil, nil
+	}
+
+	routes := make([]HTTPRoute, 0, len(server.Routes))
+	for _, route := range server.Routes {
+		hosts := make([]string, 0)
+		for _, match := range route.Match {
+			hosts = append(hosts, match.Host...)
+		}
+		if len(hosts) == 0 {
+			continue
+		}
+
+		upstreams := make([]string, 0)
+		for _, handler := range route.Handle {
+			if handler.Handler != "reverse_proxy" {
+				continue
+			}
+			for _, upstream := range handler.Upstreams {
+				if strings.TrimSpace(upstream.Dial) != "" {
+					upstreams = append(upstreams, upstream.Dial)
+				}
+			}
+		}
+		if len(upstreams) == 0 {
+			continue
+		}
+
+		sort.Strings(hosts)
+		sort.Strings(upstreams)
+		for _, host := range hosts {
+			routes = append(routes, HTTPRoute{
+				Host:      host,
+				Upstreams: append([]string(nil), upstreams...),
+			})
+		}
+	}
+
+	sort.Slice(routes, func(i, j int) bool {
+		return routes[i].Host < routes[j].Host
+	})
+	return routes, nil
+}
+
 func normalizeJSON(raw []byte) ([]byte, error) {
 	var decoded any
 	if err := json.Unmarshal(raw, &decoded); err != nil {

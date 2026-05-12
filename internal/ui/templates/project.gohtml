@@ -14,7 +14,7 @@
         <div>
           <p class="eyebrow">CaddyTower</p>
           <h1>{{if .Headline}}{{.Headline}}{{else}}Project settings{{end}}</h1>
-          <p class="lede">Update this project and reapply it to Docker, Caddy, and Cloudflare.</p>
+          <p class="lede">Update this project and reapply it to Docker, networking, and web routing where applicable.</p>
         </div>
       </header>
 
@@ -27,6 +27,11 @@
           <h2>Project details</h2>
           <form method="post" action="{{.Project.Action}}" class="stack">
             <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+            <input type="hidden" name="project_type" value="{{.Project.Type}}">
+            <label class="field">
+              <span>Project type</span>
+              <input type="text" value="{{.Project.Type}}" readonly>
+            </label>
             <label class="field">
               <span>Name</span>
               <input type="text" name="name" value="{{.Project.Name}}" required>
@@ -40,12 +45,16 @@
               <input type="text" name="image_ref" value="{{.Project.ImageRef}}" required>
             </label>
             <label class="field">
-              <span>Subdomain</span>
-              <input type="text" name="subdomain" value="{{.Project.Subdomain}}" required>
+              <span>Subdomain (web only)</span>
+              <input type="text" name="subdomain" value="{{.Project.Subdomain}}">
             </label>
             <label class="field">
-              <span>Internal port</span>
-              <input type="number" name="internal_port" min="1" max="65535" value="{{.Project.InternalPort}}" required>
+              <span>Internal port (web only)</span>
+              <input type="number" name="internal_port" min="1" max="65535" value="{{.Project.InternalPort}}">
+            </label>
+            <label class="field">
+              <span>Published ports (TCP/UDP only)</span>
+              <textarea name="port_mappings" rows="4" placeholder="25565:25565&#10;8081:8080">{{.Project.PortMappingsText}}</textarea>
             </label>
             <label class="checkbox">
               <input type="checkbox" name="watchtower_enabled" {{if .Project.WatchtowerEnabled}}checked{{end}}>
@@ -62,7 +71,9 @@
         <article class="card">
           <h2>Deploy metadata</h2>
           <dl class="kv">
-            <div><dt>URL</dt><dd>{{.ProjectMeta.FullDomain}}</dd></div>
+            <div><dt>Type</dt><dd>{{.ProjectMeta.Type}}</dd></div>
+            <div><dt>URL</dt><dd>{{if .ProjectMeta.FullDomain}}{{.ProjectMeta.FullDomain}}{{else}}n/a{{end}}</dd></div>
+            <div><dt>Published ports</dt><dd>{{if .ProjectMeta.PortMappingsText}}{{.ProjectMeta.PortMappingsText}}{{else}}n/a{{end}}</dd></div>
             <div><dt>Container</dt><dd>{{.ProjectMeta.ContainerName}}</dd></div>
             <div><dt>Status</dt><dd>{{.ProjectMeta.Status}}</dd></div>
             <div><dt>Image</dt><dd>{{.ProjectMeta.ImageRef}}</dd></div>
@@ -140,7 +151,14 @@
           {{end}}
         </article>
       </section>
+
+      <section class="card">
+        <h2>Live logs</h2>
+        <p class="muted">Streaming recent container logs for this project.</p>
+        <pre class="log-output" data-log-stream data-logs-url="/projects/{{.Project.ID}}/logs/stream?tail=200">Connecting to log stream...</pre>
+      </section>
     </main>
+    <script src="/assets/app.js"></script>
   </body>
 </html>
 {{end}}

@@ -22,6 +22,16 @@ type ProjectRecord struct {
 	CreatedAt         time.Time
 	UpdatedAt         time.Time
 	Env               map[string]string
+	Ports             []ProjectPortRecord
+}
+
+type ProjectPortRecord struct {
+	ID            int64
+	ProjectID     string
+	Proto         string
+	HostPort      int
+	ContainerPort int
+	CreatedAt     time.Time
 }
 
 func (s *Store) GetSettings(ctx context.Context, keys ...string) (map[string]string, error) {
@@ -137,9 +147,9 @@ func upsertProject(ctx context.Context, tx *sql.Tx, project ProjectRecord, updat
 	if update {
 		result, err := tx.ExecContext(ctx, `
 			UPDATE projects
-			SET name = ?, image_ref = ?, internal_port = ?, subdomain = ?, watchtower_enabled = ?, updated_at = CURRENT_TIMESTAMP
+			SET name = ?, type = ?, image_ref = ?, internal_port = ?, subdomain = ?, watchtower_enabled = ?, updated_at = CURRENT_TIMESTAMP
 			WHERE id = ?
-		`, project.Name, project.ImageRef, project.InternalPort, project.Subdomain, boolToInt(project.WatchtowerEnabled), project.ID)
+		`, project.Name, project.Type, project.ImageRef, project.InternalPort, project.Subdomain, boolToInt(project.WatchtowerEnabled), project.ID)
 		if err != nil {
 			return fmt.Errorf("update project %s: %w", project.ID, err)
 		}
@@ -179,6 +189,10 @@ func upsertProject(ctx context.Context, tx *sql.Tx, project ProjectRecord, updat
 		}
 	}
 
+	if err := replaceProjectPorts(ctx, tx, project.ID, project.Ports); err != nil {
+		return err
+	}
+
 	return nil
 }
 
@@ -215,6 +229,11 @@ func (s *Store) GetProject(ctx context.Context, projectID string) (ProjectRecord
 		return ProjectRecord{}, err
 	}
 	project.Env = env
+	ports, err := s.getProjectPorts(ctx, project.ID)
+	if err != nil {
+		return ProjectRecord{}, err
+	}
+	project.Ports = ports
 
 	return project, nil
 }
@@ -252,6 +271,11 @@ func (s *Store) GetProjectBySlug(ctx context.Context, slug string) (ProjectRecor
 		return ProjectRecord{}, err
 	}
 	project.Env = env
+	ports, err := s.getProjectPorts(ctx, project.ID)
+	if err != nil {
+		return ProjectRecord{}, err
+	}
+	project.Ports = ports
 
 	return project, nil
 }
@@ -299,6 +323,11 @@ func (s *Store) ListProjects(ctx context.Context) ([]ProjectRecord, error) {
 			return nil, err
 		}
 		projects[i].Env = env
+		ports, err := s.getProjectPorts(ctx, projects[i].ID)
+		if err != nil {
+			return nil, err
+		}
+		projects[i].Ports = ports
 	}
 
 	return projects, nil
@@ -340,6 +369,69 @@ func (s *Store) getProjectEnv(ctx context.Context, projectID string) (map[string
 		env[key] = value
 	}
 	return env, rows.Err()
+}
+
+func (s *Store) getProjectPorts(ctx context.Context, projectID string) ([]ProjectPortRecord, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id, project_id, proto, host_port, container_port, created_at
+		FROM project_ports
+		WHERE project_id = ?
+		ORDER BY proto ASC, host_port ASC, container_port ASC, id ASC
+	`, projectID)
+	if err != nil {
+		return nil, fmt.Errorf("query ports for project %s: %w", projectID, err)
+	}
+	defer rows.Close()
+
+	var ports []ProjectPortRecord
+	for rows.Next() {
+		var port ProjectPortRecord
+		if err := rows.Scan(
+			&port.ID,
+			&port.ProjectID,
+			&port.Proto,
+			&port.HostPort,
+			&port.ContainerPort,
+			&port.CreatedAt,
+		); err != nil {
+			return nil, fmt.Errorf("scan port for project %s: %w", projectID, err)
+		}
+		ports = append(ports, port)
+	}
+
+	return ports, rows.Err()
+}
+
+func replaceProjectPorts(ctx context.Context, tx *sql.Tx, projectID string, ports []ProjectPortRecord) error {
+	if _, err := tx.ExecContext(ctx, `DELETE FROM project_ports WHERE project_id = ?`, projectID); err != nil {
+		return fmt.Errorf("clear ports for project %s: %w", projectID, err)
+	}
+
+	if len(ports) == 0 {
+		return nil
+	}
+
+	sortedPorts := append([]ProjectPortRecord(nil), ports...)
+	sort.Slice(sortedPorts, func(i, j int) bool {
+		if sortedPorts[i].Proto != sortedPorts[j].Proto {
+			return sortedPorts[i].Proto < sortedPorts[j].Proto
+		}
+		if sortedPorts[i].HostPort != sortedPorts[j].HostPort {
+			return sortedPorts[i].HostPort < sortedPorts[j].HostPort
+		}
+		return sortedPorts[i].ContainerPort < sortedPorts[j].ContainerPort
+	})
+
+	for _, port := range sortedPorts {
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO project_ports (project_id, proto, host_port, container_port)
+			VALUES (?, ?, ?, ?)
+		`, projectID, port.Proto, port.HostPort, port.ContainerPort); err != nil {
+			return fmt.Errorf("insert port %s/%d->%d for project %s: %w", port.Proto, port.HostPort, port.ContainerPort, projectID, err)
+		}
+	}
+
+	return nil
 }
 
 func placeholders(count int) string {

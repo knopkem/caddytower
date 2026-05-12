@@ -2,7 +2,9 @@ package projects
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/url"
 	"regexp"
@@ -29,6 +31,9 @@ const (
 	settingCloudflareAPIToken = "cloudflare_api_token"
 	settingCloudflareProxied  = "cloudflare_proxied"
 	managedNetworkName        = "edge"
+	projectTypeWeb            = "web"
+	projectTypeTCP            = "tcp"
+	projectTypeUDP            = "udp"
 )
 
 var slugPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{1,62}$`)
@@ -37,11 +42,14 @@ type dockerService interface {
 	PullImage(context.Context, string) error
 	RecreateContainer(context.Context, dockerx.ContainerSpec) (dockerx.ContainerInspect, error)
 	InspectContainer(context.Context, string) (dockerx.ContainerInspect, error)
+	ListContainers(context.Context) ([]dockerx.ContainerSummary, error)
 	ListContainersByLabel(context.Context, string, string) ([]dockerx.ContainerSummary, error)
 	RemoveContainer(context.Context, string) error
+	StreamLogs(context.Context, string, int) (io.ReadCloser, error)
 }
 
 type caddyService interface {
+	GetConfig(context.Context) (json.RawMessage, error)
 	ReconcileManagedRoutes(context.Context, []caddyadmin.HTTPRoute, []string) (bool, error)
 }
 
@@ -89,12 +97,14 @@ type Project struct {
 	ID                string
 	Name              string
 	Slug              string
+	Type              string
 	WebhookSecret     string
 	ImageRef          string
 	Subdomain         string
 	FullDomain        string
 	ContainerName     string
 	InternalPort      int
+	Ports             []ProjectPort
 	WatchtowerEnabled bool
 	Env               map[string]string
 	EnvText           string
@@ -110,14 +120,22 @@ type Dashboard struct {
 }
 
 type WebProjectInput struct {
+	Type              string
 	ID                string
 	Name              string
 	Slug              string
 	ImageRef          string
 	Subdomain         string
 	InternalPort      int
+	PortMappingsText  string
 	WatchtowerEnabled bool
 	EnvText           string
+}
+
+type ProjectPort struct {
+	Proto         string
+	HostPort      int
+	ContainerPort int
 }
 
 type DBAttachment struct {
@@ -136,6 +154,12 @@ type DatabaseAttachmentInput struct {
 	ProjectID  string
 	Engine     string
 	EnvVarName string
+}
+
+type adoptRoute struct {
+	Host          string
+	ContainerName string
+	ContainerPort int
 }
 
 func New(cfg config.Config, stateStore *store.Store, secretService *secrets.Service, dockerSvc dockerService, caddySvc caddyService, logger *slog.Logger) *Service {
@@ -253,6 +277,11 @@ func (s *Service) SaveSettings(ctx context.Context, input SettingsInput, userID 
 }
 
 func (s *Service) CreateWebProject(ctx context.Context, input WebProjectInput, userID string) (Project, error) {
+	input.Type = projectTypeWeb
+	return s.CreateProject(ctx, input, userID)
+}
+
+func (s *Service) CreateProject(ctx context.Context, input WebProjectInput, userID string) (Project, error) {
 	record, err := s.recordFromInput(input, "")
 	if err != nil {
 		return Project{}, err
@@ -282,11 +311,17 @@ func (s *Service) CreateWebProject(ctx context.Context, input WebProjectInput, u
 }
 
 func (s *Service) UpdateWebProject(ctx context.Context, input WebProjectInput, userID string) (Project, error) {
+	input.Type = projectTypeWeb
+	return s.UpdateProject(ctx, input, userID)
+}
+
+func (s *Service) UpdateProject(ctx context.Context, input WebProjectInput, userID string) (Project, error) {
 	current, err := s.store.GetProject(ctx, input.ID)
 	if err != nil {
 		return Project{}, err
 	}
 
+	input.Type = current.Type
 	record, err := s.recordFromInput(input, current.Slug)
 	if err != nil {
 		return Project{}, err
@@ -355,6 +390,97 @@ func (s *Service) RedeployProjectByWebhook(ctx context.Context, slug string) (Pr
 	}
 
 	return project, nil
+}
+
+func (s *Service) StreamProjectLogs(ctx context.Context, projectID string, tail int) (io.ReadCloser, error) {
+	if s.docker == nil {
+		return nil, fmt.Errorf("docker logs are unavailable")
+	}
+
+	project, _, err := s.GetProject(ctx, projectID)
+	if err != nil {
+		return nil, err
+	}
+
+	return s.docker.StreamLogs(ctx, project.ContainerName, tail)
+}
+
+func (s *Service) AdoptExisting(ctx context.Context, userID string) ([]Project, error) {
+	if s.docker == nil {
+		return nil, fmt.Errorf("docker integration is unavailable")
+	}
+
+	settings, err := s.loadSettings(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	existing, err := s.store.ListProjects(ctx)
+	if err != nil {
+		return nil, err
+	}
+	existingSlugs := make(map[string]struct{}, len(existing))
+	existingBySlug := make(map[string]store.ProjectRecord, len(existing))
+	managedContainers := make(map[string]struct{}, len(existing))
+	for _, project := range existing {
+		existingSlugs[project.Slug] = struct{}{}
+		existingBySlug[project.Slug] = project
+		managedContainers[containerName(project.Slug)] = struct{}{}
+	}
+
+	routes, err := s.adoptRoutes(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	containers, err := s.docker.ListContainers(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	adopted := make([]Project, 0)
+	for _, summary := range containers {
+		if skipAdoptContainer(summary, managedContainers) {
+			continue
+		}
+
+		inspect, err := s.docker.InspectContainer(ctx, summary.Name)
+		if err != nil {
+			return nil, err
+		}
+
+		record, ok, err := s.adoptRecordFromContainer(summary, inspect, settings, routes, existingSlugs, existingBySlug)
+		if err != nil {
+			return nil, err
+		}
+		if !ok {
+			continue
+		}
+
+		if err := s.store.CreateProject(ctx, record); err != nil {
+			return nil, err
+		}
+		existingSlugs[record.Slug] = struct{}{}
+		existingBySlug[record.Slug] = record
+		managedContainers[containerName(record.Slug)] = struct{}{}
+
+		if err := s.store.InsertAuditLog(ctx, uuid.NewString(), userID, "project.adopt", "project:"+record.ID, map[string]any{
+			"slug":          record.Slug,
+			"type":          record.Type,
+			"container":     summary.Name,
+			"published_env": len(record.Env),
+		}); err != nil {
+			return nil, err
+		}
+
+		project, _, err := s.GetProject(ctx, record.ID)
+		if err != nil {
+			return nil, err
+		}
+		adopted = append(adopted, project)
+	}
+
+	return adopted, nil
 }
 
 func (s *Service) DeleteProject(ctx context.Context, projectID, userID string) error {
@@ -501,6 +627,14 @@ func (s *Service) DeleteDatabaseAttachment(ctx context.Context, projectID string
 }
 
 func (s *Service) recordFromInput(input WebProjectInput, existingSlug string) (store.ProjectRecord, error) {
+	projectType := strings.TrimSpace(strings.ToLower(input.Type))
+	if projectType == "" {
+		projectType = projectTypeWeb
+	}
+	if projectType != projectTypeWeb && projectType != projectTypeTCP && projectType != projectTypeUDP {
+		return store.ProjectRecord{}, fmt.Errorf("project type must be web, tcp, or udp")
+	}
+
 	name := strings.TrimSpace(input.Name)
 	if name == "" {
 		return store.ProjectRecord{}, fmt.Errorf("project name is required")
@@ -520,14 +654,33 @@ func (s *Service) recordFromInput(input WebProjectInput, existingSlug string) (s
 	}
 
 	subdomain := strings.TrimSpace(strings.ToLower(input.Subdomain))
-	if subdomain == "" {
-		return store.ProjectRecord{}, fmt.Errorf("subdomain is required")
-	}
-	if strings.Contains(subdomain, " ") || strings.HasPrefix(subdomain, ".") || strings.HasSuffix(subdomain, ".") {
-		return store.ProjectRecord{}, fmt.Errorf("subdomain is invalid")
-	}
-	if input.InternalPort <= 0 || input.InternalPort > 65535 {
-		return store.ProjectRecord{}, fmt.Errorf("internal port must be between 1 and 65535")
+	internalPort := 0
+	var ports []store.ProjectPortRecord
+	switch projectType {
+	case projectTypeWeb:
+		if subdomain == "" {
+			return store.ProjectRecord{}, fmt.Errorf("subdomain is required")
+		}
+		if strings.Contains(subdomain, " ") || strings.HasPrefix(subdomain, ".") || strings.HasSuffix(subdomain, ".") {
+			return store.ProjectRecord{}, fmt.Errorf("subdomain is invalid")
+		}
+		if input.InternalPort <= 0 || input.InternalPort > 65535 {
+			return store.ProjectRecord{}, fmt.Errorf("internal port must be between 1 and 65535")
+		}
+		internalPort = input.InternalPort
+	case projectTypeTCP, projectTypeUDP:
+		parsedPorts, err := parsePortMappings(input.PortMappingsText, projectType)
+		if err != nil {
+			return store.ProjectRecord{}, err
+		}
+		ports = make([]store.ProjectPortRecord, 0, len(parsedPorts))
+		for _, port := range parsedPorts {
+			ports = append(ports, store.ProjectPortRecord{
+				Proto:         port.Proto,
+				HostPort:      port.HostPort,
+				ContainerPort: port.ContainerPort,
+			})
+		}
 	}
 
 	env, err := s.encodeEnv(parseEnvText(input.EnvText))
@@ -544,13 +697,14 @@ func (s *Service) recordFromInput(input WebProjectInput, existingSlug string) (s
 		ID:                id,
 		Slug:              slug,
 		Name:              name,
-		Type:              "web",
+		Type:              projectType,
 		ImageRef:          imageRef,
-		InternalPort:      input.InternalPort,
+		InternalPort:      internalPort,
 		Subdomain:         subdomain,
 		WatchtowerEnabled: input.WatchtowerEnabled,
 		WebhookSecret:     randomSecret(),
 		Env:               env,
+		Ports:             ports,
 	}, nil
 }
 
@@ -621,12 +775,14 @@ func (s *Service) projectFromRecord(ctx context.Context, record store.ProjectRec
 		ID:                record.ID,
 		Name:              record.Name,
 		Slug:              record.Slug,
+		Type:              record.Type,
 		WebhookSecret:     record.WebhookSecret,
 		ImageRef:          record.ImageRef,
 		Subdomain:         record.Subdomain,
 		FullDomain:        fqdn(settings.RootDomain, record.Subdomain),
 		ContainerName:     containerName(record.Slug),
 		InternalPort:      record.InternalPort,
+		Ports:             projectPortsFromStore(record.Ports),
 		WatchtowerEnabled: record.WatchtowerEnabled,
 		Env:               env,
 		EnvText:           envText(env),
@@ -638,7 +794,7 @@ func (s *Service) projectFromRecord(ctx context.Context, record store.ProjectRec
 }
 
 func (s *Service) applyProject(ctx context.Context, project Project, settings Settings) error {
-	if settings.RootDomain == "" {
+	if project.Type == projectTypeWeb && settings.RootDomain == "" {
 		return fmt.Errorf("configure the root domain before deploying projects")
 	}
 
@@ -650,20 +806,27 @@ func (s *Service) applyProject(ctx context.Context, project Project, settings Se
 		labels := map[string]string{
 			"caddytower.managed": "true",
 			"caddytower.project": project.Slug,
+			"caddytower.type":    project.Type,
 		}
 		if project.WatchtowerEnabled {
 			labels["com.centurylinklabs.watchtower.enable"] = "true"
 		}
 
-		if _, err := s.docker.RecreateContainer(ctx, dockerx.ContainerSpec{
+		spec := dockerx.ContainerSpec{
 			Name:          project.ContainerName,
 			Image:         project.ImageRef,
 			Env:           project.runtimeEnv(),
 			Labels:        labels,
 			Network:       managedNetworkName,
-			ExposedPorts:  []string{strconv.Itoa(project.InternalPort)},
 			RestartPolicy: "unless-stopped",
-		}); err != nil {
+		}
+		if project.Type == projectTypeWeb {
+			spec.ExposedPorts = []string{strconv.Itoa(project.InternalPort)}
+		} else {
+			spec.PublishedPorts = publishedPorts(project.Ports)
+		}
+
+		if _, err := s.docker.RecreateContainer(ctx, spec); err != nil {
 			return err
 		}
 	}
@@ -699,9 +862,6 @@ func (s *Service) reconcileCaddy(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	if settings.RootDomain == "" {
-		return fmt.Errorf("root domain is required for caddy reconciliation")
-	}
 
 	records, err := s.store.ListProjects(ctx)
 	if err != nil {
@@ -711,7 +871,7 @@ func (s *Service) reconcileCaddy(ctx context.Context) error {
 	routes := make([]caddyadmin.HTTPRoute, 0, len(records))
 	managedHosts := make([]string, 0, len(records))
 	for _, record := range records {
-		if record.Type != "web" {
+		if record.Type != projectTypeWeb {
 			continue
 		}
 		host := fqdn(settings.RootDomain, record.Subdomain)
@@ -721,12 +881,21 @@ func (s *Service) reconcileCaddy(ctx context.Context) error {
 		})
 		managedHosts = append(managedHosts, host)
 	}
+	if len(managedHosts) == 0 {
+		return nil
+	}
+	if settings.RootDomain == "" {
+		return fmt.Errorf("root domain is required for caddy reconciliation")
+	}
 
 	_, err = s.caddy.ReconcileManagedRoutes(ctx, routes, managedHosts)
 	return err
 }
 
 func (s *Service) upsertCloudflare(ctx context.Context, project Project, settings Settings) error {
+	if project.Type != projectTypeWeb || project.FullDomain == "" {
+		return nil
+	}
 	if settings.CloudflareZoneID == "" || settings.OriginHostname == "" {
 		return nil
 	}
@@ -749,6 +918,9 @@ func (s *Service) upsertCloudflare(ctx context.Context, project Project, setting
 }
 
 func (s *Service) deleteCloudflare(ctx context.Context, project Project, settings Settings) error {
+	if project.Type != projectTypeWeb || project.FullDomain == "" {
+		return nil
+	}
 	if settings.CloudflareZoneID == "" {
 		return nil
 	}
@@ -850,6 +1022,336 @@ func (s *Service) loadAttachments(ctx context.Context, projectID string) ([]DBAt
 	return result, nil
 }
 
+func projectPortsFromStore(records []store.ProjectPortRecord) []ProjectPort {
+	if len(records) == 0 {
+		return nil
+	}
+
+	ports := make([]ProjectPort, 0, len(records))
+	for _, record := range records {
+		ports = append(ports, ProjectPort{
+			Proto:         record.Proto,
+			HostPort:      record.HostPort,
+			ContainerPort: record.ContainerPort,
+		})
+	}
+	return ports
+}
+
+func (s *Service) adoptRoutes(ctx context.Context) (map[string]adoptRoute, error) {
+	if s.caddy == nil {
+		return map[string]adoptRoute{}, nil
+	}
+
+	raw, err := s.caddy.GetConfig(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	routes, err := caddyadmin.ExtractHTTPRoutes(raw)
+	if err != nil {
+		return nil, err
+	}
+
+	index := make(map[string]adoptRoute, len(routes))
+	for _, route := range routes {
+		if len(route.Upstreams) == 0 {
+			continue
+		}
+		containerName, port, ok := strings.Cut(route.Upstreams[0], ":")
+		if !ok {
+			continue
+		}
+		containerPort, err := strconv.Atoi(strings.TrimSpace(port))
+		if err != nil {
+			continue
+		}
+		index[strings.TrimSpace(containerName)] = adoptRoute{
+			Host:          strings.TrimSpace(route.Host),
+			ContainerName: strings.TrimSpace(containerName),
+			ContainerPort: containerPort,
+		}
+	}
+
+	return index, nil
+}
+
+func (s *Service) adoptRecordFromContainer(summary dockerx.ContainerSummary, inspect dockerx.ContainerInspect, settings Settings, routes map[string]adoptRoute, existingSlugs map[string]struct{}, existingBySlug map[string]store.ProjectRecord) (store.ProjectRecord, bool, error) {
+	baseSlug := adoptSlugBase(summary.Name)
+	if existing, ok := existingBySlug[baseSlug]; ok && existing.ImageRef == inspect.Image {
+		return store.ProjectRecord{}, false, nil
+	}
+	slug := uniqueSlug(baseSlug, existingSlugs)
+	env, err := s.encodeEnv(parseEnvSlice(inspect.Env))
+	if err != nil {
+		return store.ProjectRecord{}, false, err
+	}
+
+	record := store.ProjectRecord{
+		ID:                uuid.NewString(),
+		Slug:              slug,
+		Name:              summary.Name,
+		ImageRef:          inspect.Image,
+		WatchtowerEnabled: strings.EqualFold(inspect.Labels["com.centurylinklabs.watchtower.enable"], "true"),
+		WebhookSecret:     randomSecret(),
+		Env:               env,
+	}
+
+	if route, ok := routes[summary.Name]; ok {
+		subdomain, ok := adoptSubdomain(route.Host, settings.RootDomain)
+		if ok {
+			record.Type = projectTypeWeb
+			record.Subdomain = subdomain
+			record.InternalPort = route.ContainerPort
+			return record, true, nil
+		}
+	}
+
+	projectType, ports, ok, err := adoptPublishedPorts(inspect.PublishedPorts)
+	if err != nil {
+		return store.ProjectRecord{}, false, err
+	}
+	if !ok {
+		return store.ProjectRecord{}, false, nil
+	}
+
+	record.Type = projectType
+	record.Ports = ports
+	return record, true, nil
+}
+
+func publishedPorts(ports []ProjectPort) []dockerx.PortBinding {
+	if len(ports) == 0 {
+		return nil
+	}
+
+	bindings := make([]dockerx.PortBinding, 0, len(ports))
+	for _, port := range ports {
+		bindings = append(bindings, dockerx.PortBinding{
+			ContainerPort: strconv.Itoa(port.ContainerPort),
+			HostPort:      strconv.Itoa(port.HostPort),
+			Protocol:      port.Proto,
+		})
+	}
+	return bindings
+}
+
+func adoptPublishedPorts(bindings []dockerx.PortBinding) (string, []store.ProjectPortRecord, bool, error) {
+	if len(bindings) == 0 {
+		return "", nil, false, nil
+	}
+
+	protocol := ""
+	ports := make([]store.ProjectPortRecord, 0, len(bindings))
+	for _, binding := range bindings {
+		if strings.TrimSpace(binding.HostPort) == "" || strings.TrimSpace(binding.ContainerPort) == "" {
+			continue
+		}
+		currentProto := strings.ToLower(strings.TrimSpace(binding.Protocol))
+		if currentProto == "" {
+			currentProto = projectTypeTCP
+		}
+		if currentProto != projectTypeTCP && currentProto != projectTypeUDP {
+			return "", nil, false, fmt.Errorf("unsupported published port protocol %q", binding.Protocol)
+		}
+		if protocol == "" {
+			protocol = currentProto
+		} else if protocol != currentProto {
+			return "", nil, false, nil
+		}
+
+		hostPort, err := strconv.Atoi(binding.HostPort)
+		if err != nil {
+			return "", nil, false, fmt.Errorf("parse host port %q: %w", binding.HostPort, err)
+		}
+		containerPort, err := strconv.Atoi(binding.ContainerPort)
+		if err != nil {
+			return "", nil, false, fmt.Errorf("parse container port %q: %w", binding.ContainerPort, err)
+		}
+		ports = append(ports, store.ProjectPortRecord{
+			Proto:         protocol,
+			HostPort:      hostPort,
+			ContainerPort: containerPort,
+		})
+	}
+
+	if len(ports) == 0 {
+		return "", nil, false, nil
+	}
+	sort.Slice(ports, func(i, j int) bool {
+		if ports[i].HostPort != ports[j].HostPort {
+			return ports[i].HostPort < ports[j].HostPort
+		}
+		return ports[i].ContainerPort < ports[j].ContainerPort
+	})
+	return protocol, ports, true, nil
+}
+
+func PortMappingsText(ports []ProjectPort) string {
+	if len(ports) == 0 {
+		return ""
+	}
+
+	lines := make([]string, 0, len(ports))
+	for _, port := range ports {
+		lines = append(lines, fmt.Sprintf("%d:%d", port.HostPort, port.ContainerPort))
+	}
+	return strings.Join(lines, "\n")
+}
+
+func parseEnvSlice(env []string) map[string]string {
+	values := make(map[string]string, len(env))
+	for _, entry := range env {
+		parts := strings.SplitN(entry, "=", 2)
+		if len(parts) == 0 {
+			continue
+		}
+		key := strings.TrimSpace(parts[0])
+		if key == "" {
+			continue
+		}
+		value := ""
+		if len(parts) == 2 {
+			value = parts[1]
+		}
+		values[key] = value
+	}
+	return values
+}
+
+func skipAdoptContainer(summary dockerx.ContainerSummary, managedContainers map[string]struct{}) bool {
+	if summary.Name == "" {
+		return true
+	}
+	if _, ok := managedContainers[summary.Name]; ok {
+		return true
+	}
+	if strings.EqualFold(summary.Labels["caddytower.managed"], "true") {
+		return true
+	}
+	if summary.Name == "shared-caddy" || summary.Name == "caddytower" {
+		return true
+	}
+	if strings.Contains(summary.Name, "watchtower") || strings.HasPrefix(summary.Name, "caddytower-") {
+		return true
+	}
+	return false
+}
+
+func adoptSlugBase(containerName string) string {
+	normalized := strings.ToLower(containerName)
+	replacer := strings.NewReplacer("_", "-", ".", "-", "/", "-", " ", "-")
+	normalized = replacer.Replace(normalized)
+
+	var builder strings.Builder
+	lastDash := false
+	for _, r := range normalized {
+		switch {
+		case r >= 'a' && r <= 'z', r >= '0' && r <= '9':
+			builder.WriteRune(r)
+			lastDash = false
+		case !lastDash:
+			builder.WriteRune('-')
+			lastDash = true
+		}
+	}
+
+	result := strings.Trim(builder.String(), "-")
+	if result == "" {
+		return "project"
+	}
+	return result
+}
+
+func uniqueSlug(base string, existing map[string]struct{}) string {
+	if _, ok := existing[base]; !ok {
+		return base
+	}
+	for idx := 2; ; idx++ {
+		candidate := fmt.Sprintf("%s-%d", base, idx)
+		if _, ok := existing[candidate]; !ok {
+			return candidate
+		}
+	}
+}
+
+func adoptSubdomain(host, rootDomain string) (string, bool) {
+	host = strings.TrimSpace(strings.ToLower(host))
+	rootDomain = strings.TrimSpace(strings.ToLower(rootDomain))
+	if host == "" || rootDomain == "" {
+		return "", false
+	}
+	if host == rootDomain {
+		return "", false
+	}
+	suffix := "." + strings.TrimPrefix(rootDomain, ".")
+	if !strings.HasSuffix(host, suffix) {
+		return "", false
+	}
+	subdomain := strings.TrimSuffix(host, suffix)
+	if subdomain == "" || strings.Contains(subdomain, ".") {
+		return "", false
+	}
+	return subdomain, true
+}
+
+func parsePortMappings(raw, proto string) ([]ProjectPort, error) {
+	lines := strings.FieldsFunc(raw, func(r rune) bool {
+		return r == '\n' || r == '\r' || r == ','
+	})
+	if len(lines) == 0 {
+		return nil, fmt.Errorf("at least one port mapping is required")
+	}
+
+	seen := map[string]struct{}{}
+	seenHostPorts := map[int]struct{}{}
+	ports := make([]ProjectPort, 0, len(lines))
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		parts := strings.Split(line, ":")
+		if len(parts) != 2 {
+			return nil, fmt.Errorf("invalid port mapping %q: use host:container", line)
+		}
+		hostPort, err := strconv.Atoi(strings.TrimSpace(parts[0]))
+		if err != nil || hostPort <= 0 || hostPort > 65535 {
+			return nil, fmt.Errorf("invalid host port in %q", line)
+		}
+		containerPort, err := strconv.Atoi(strings.TrimSpace(parts[1]))
+		if err != nil || containerPort <= 0 || containerPort > 65535 {
+			return nil, fmt.Errorf("invalid container port in %q", line)
+		}
+		key := fmt.Sprintf("%s/%d/%d", proto, hostPort, containerPort)
+		if _, ok := seen[key]; ok {
+			return nil, fmt.Errorf("duplicate port mapping %q", line)
+		}
+		if _, ok := seenHostPorts[hostPort]; ok {
+			return nil, fmt.Errorf("host port %d is listed more than once", hostPort)
+		}
+		seen[key] = struct{}{}
+		seenHostPorts[hostPort] = struct{}{}
+		ports = append(ports, ProjectPort{
+			Proto:         proto,
+			HostPort:      hostPort,
+			ContainerPort: containerPort,
+		})
+	}
+
+	if len(ports) == 0 {
+		return nil, fmt.Errorf("at least one port mapping is required")
+	}
+
+	sort.Slice(ports, func(i, j int) bool {
+		if ports[i].HostPort != ports[j].HostPort {
+			return ports[i].HostPort < ports[j].HostPort
+		}
+		return ports[i].ContainerPort < ports[j].ContainerPort
+	})
+	return ports, nil
+}
+
 func parseEnvText(raw string) map[string]string {
 	values := map[string]string{}
 	lines := strings.Split(raw, "\n")
@@ -886,6 +1388,9 @@ func envText(values map[string]string) string {
 }
 
 func fqdn(rootDomain, subdomain string) string {
+	if strings.TrimSpace(subdomain) == "" {
+		return ""
+	}
 	if rootDomain == "" {
 		return subdomain
 	}
