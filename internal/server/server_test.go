@@ -31,7 +31,7 @@ func TestRouterServesHome(t *testing.T) {
 		PublicBaseURL: "http://localhost:8080",
 		DataDir:       "/tmp/caddytower",
 		CaddyAdminURL: "http://shared-caddy:2019",
-	}, webUI, newNoopLogger(), version.Info{Version: "test"}, nil, nil)
+	}, webUI, newNoopLogger(), version.Info{Version: "test"}, nil, nil, nil)
 
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	rec := httptest.NewRecorder()
@@ -62,7 +62,7 @@ func TestRootRedirectsToSetupWhenBootstrapRequired(t *testing.T) {
 		PublicBaseURL: "http://localhost:8080",
 		DataDir:       t.TempDir(),
 		CaddyAdminURL: "http://shared-caddy:2019",
-	}, webUI, newNoopLogger(), version.Info{Version: "test"}, stateStore, authService)
+	}, webUI, newNoopLogger(), version.Info{Version: "test"}, stateStore, authService, nil)
 
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	rec := httptest.NewRecorder()
@@ -111,7 +111,7 @@ func TestRootRedirectsToLoginAfterBootstrap(t *testing.T) {
 		PublicBaseURL: "http://localhost:8080",
 		DataDir:       t.TempDir(),
 		CaddyAdminURL: "http://shared-caddy:2019",
-	}, webUI, newNoopLogger(), version.Info{Version: "test"}, stateStore, authService)
+	}, webUI, newNoopLogger(), version.Info{Version: "test"}, stateStore, authService, nil)
 
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	rec := httptest.NewRecorder()

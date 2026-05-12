@@ -160,6 +160,21 @@ func (c *Client) UpsertCNAME(ctx context.Context, zoneID, fqdn, target string, p
 	return response.Result, true, nil
 }
 
+func (c *Client) DeleteCNAME(ctx context.Context, zoneID, fqdn string) error {
+	records, err := c.listDNSRecords(ctx, zoneID, "CNAME", fqdn)
+	if err != nil {
+		return err
+	}
+
+	for _, record := range records {
+		if _, err := c.do(ctx, http.MethodDelete, fmt.Sprintf("/zones/%s/dns_records/%s", zoneID, record.ID), nil); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
 func (c *Client) listDNSRecords(ctx context.Context, zoneID, recordType, name string) ([]DNSRecord, error) {
 	path := fmt.Sprintf("/zones/%s/dns_records?type=%s&name=%s", zoneID, url.QueryEscape(recordType), url.QueryEscape(name))
 

@@ -124,3 +124,41 @@ func TestUpsertCNAMESkipsUpdateWhenUnchanged(t *testing.T) {
 		t.Fatalf("write count = %d", got)
 	}
 }
+
+func TestDeleteCNAMERemovesMatchingRecords(t *testing.T) {
+	t.Parallel()
+
+	var deletes atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/zones/zone-1/dns_records":
+			_ = json.NewEncoder(w).Encode(apiResponse[[]DNSRecord]{
+				Success: true,
+				Result: []DNSRecord{{
+					ID:   "rec-1",
+					Type: "CNAME",
+					Name: "app.example.com",
+				}},
+			})
+		case r.Method == http.MethodDelete && r.URL.Path == "/zones/zone-1/dns_records/rec-1":
+			deletes.Add(1)
+			_ = json.NewEncoder(w).Encode(apiResponse[DNSRecord]{Success: true})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	client, err := NewWithBaseURL("secret-token", server.URL, server.Client())
+	if err != nil {
+		t.Fatalf("NewWithBaseURL() error = %v", err)
+	}
+
+	if err := client.DeleteCNAME(context.Background(), "zone-1", "app.example.com"); err != nil {
+		t.Fatalf("DeleteCNAME() error = %v", err)
+	}
+
+	if got := deletes.Load(); got != 1 {
+		t.Fatalf("delete count = %d", got)
+	}
+}

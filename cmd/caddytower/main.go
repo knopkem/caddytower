@@ -11,7 +11,10 @@ import (
 	"time"
 
 	"caddytower/internal/auth"
+	"caddytower/internal/caddyadmin"
 	"caddytower/internal/config"
+	"caddytower/internal/dockerx"
+	"caddytower/internal/projects"
 	"caddytower/internal/secrets"
 	"caddytower/internal/server"
 	"caddytower/internal/store"
@@ -52,8 +55,19 @@ func main() {
 	}()
 
 	authService := auth.New(stateStore, secretService, cfg.PublicBaseURL)
+	dockerService, err := dockerx.NewFromEnv(cfg)
+	if err != nil {
+		logger.Error("create docker service", "error", err)
+		os.Exit(1)
+	}
+	caddyService, err := caddyadmin.New(cfg.CaddyAdminURL, nil)
+	if err != nil {
+		logger.Error("create caddy admin client", "error", err)
+		os.Exit(1)
+	}
+	projectService := projects.New(cfg, stateStore, secretService, dockerService, caddyService, logger)
 
-	app := server.New(cfg, webUI, logger, version.Current(), stateStore, authService)
+	app := server.New(cfg, webUI, logger, version.Current(), stateStore, authService, projectService)
 
 	srv := &http.Server{
 		Addr:              cfg.HTTPAddr,

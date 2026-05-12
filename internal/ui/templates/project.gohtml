@@ -1,0 +1,85 @@
+{{define "project.gohtml"}}
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>{{if .PageTitle}}{{.PageTitle}}{{else}}CaddyTower{{end}}</title>
+    <meta name="color-scheme" content="dark light">
+    <link rel="stylesheet" href="/assets/app.css">
+  </head>
+  <body>
+    <main class="shell">
+      <header class="hero">
+        <div>
+          <p class="eyebrow">CaddyTower</p>
+          <h1>{{if .Headline}}{{.Headline}}{{else}}Project settings{{end}}</h1>
+          <p class="lede">Update this project and reapply it to Docker, Caddy, and Cloudflare.</p>
+        </div>
+      </header>
+
+      <p><a class="button-link" href="/">Back to dashboard</a></p>
+      {{if .ErrorMessage}}<p class="alert">{{.ErrorMessage}}</p>{{end}}
+      {{if .InfoMessage}}<p class="notice">{{.InfoMessage}}</p>{{end}}
+
+      <section class="grid">
+        <article class="card">
+          <h2>Project details</h2>
+          <form method="post" action="{{.Project.Action}}" class="stack">
+            <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+            <label class="field">
+              <span>Name</span>
+              <input type="text" name="name" value="{{.Project.Name}}" required>
+            </label>
+            <label class="field">
+              <span>Slug</span>
+              <input type="text" name="slug" value="{{.Project.Slug}}" {{if .Project.SlugReadOnly}}readonly{{end}}>
+            </label>
+            <label class="field">
+              <span>Image reference</span>
+              <input type="text" name="image_ref" value="{{.Project.ImageRef}}" required>
+            </label>
+            <label class="field">
+              <span>Subdomain</span>
+              <input type="text" name="subdomain" value="{{.Project.Subdomain}}" required>
+            </label>
+            <label class="field">
+              <span>Internal port</span>
+              <input type="number" name="internal_port" min="1" max="65535" value="{{.Project.InternalPort}}" required>
+            </label>
+            <label class="checkbox">
+              <input type="checkbox" name="watchtower_enabled" {{if .Project.WatchtowerEnabled}}checked{{end}}>
+              <span>Enable Watchtower updates</span>
+            </label>
+            <label class="field">
+              <span>Environment variables</span>
+              <textarea name="env_text" rows="10">{{.Project.EnvText}}</textarea>
+            </label>
+            <button type="submit">{{.Project.SubmitLabel}}</button>
+          </form>
+        </article>
+
+        <article class="card">
+          <h2>Deploy metadata</h2>
+          <dl class="kv">
+            <div><dt>URL</dt><dd>{{.ProjectMeta.FullDomain}}</dd></div>
+            <div><dt>Container</dt><dd>{{.ProjectMeta.ContainerName}}</dd></div>
+            <div><dt>Status</dt><dd>{{.ProjectMeta.Status}}</dd></div>
+            <div><dt>Image</dt><dd>{{.ProjectMeta.ImageRef}}</dd></div>
+          </dl>
+          <div class="actions stacked">
+            <form method="post" action="/projects/{{.Project.ID}}/deploy">
+              <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+              <button type="submit" class="secondary">Redeploy</button>
+            </form>
+            <form method="post" action="/projects/{{.Project.ID}}/delete">
+              <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+              <button type="submit" class="danger">Delete project</button>
+            </form>
+          </div>
+        </article>
+      </section>
+    </main>
+  </body>
+</html>
+{{end}}

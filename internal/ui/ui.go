@@ -30,14 +30,54 @@ type ConfigSummary struct {
 	MasterKeySet  bool
 }
 
+type SettingsFormData struct {
+	RootDomain             string
+	OriginHostname         string
+	CloudflareZoneID       string
+	CloudflareTokenPresent bool
+	CloudflareProxied      bool
+}
+
+type ProjectFormData struct {
+	ID                string
+	Action            string
+	SubmitLabel       string
+	Name              string
+	Slug              string
+	ImageRef          string
+	Subdomain         string
+	InternalPort      int
+	WatchtowerEnabled bool
+	EnvText           string
+	SlugReadOnly      bool
+}
+
+type ProjectListItem struct {
+	ID                string
+	Name              string
+	Slug              string
+	ImageRef          string
+	Subdomain         string
+	FullDomain        string
+	ContainerName     string
+	InternalPort      int
+	WatchtowerEnabled bool
+	Status            string
+}
+
 type HomePageData struct {
-	GeneratedAt time.Time
-	PageTitle   string
-	Headline    string
-	CSRFToken   string
-	Version     version.Info
-	Config      ConfigSummary
-	CurrentUser string
+	GeneratedAt  time.Time
+	PageTitle    string
+	Headline     string
+	CSRFToken    string
+	Version      version.Info
+	Config       ConfigSummary
+	CurrentUser  string
+	InfoMessage  string
+	ErrorMessage string
+	Settings     SettingsFormData
+	CreateForm   ProjectFormData
+	Projects     []ProjectListItem
 }
 
 type SetupPageData struct {
@@ -56,6 +96,17 @@ type LoginPageData struct {
 	CSRFToken    string
 	Email        string
 	ErrorMessage string
+}
+
+type ProjectPageData struct {
+	PageTitle    string
+	Headline     string
+	CSRFToken    string
+	CurrentUser  string
+	InfoMessage  string
+	ErrorMessage string
+	Project      ProjectFormData
+	ProjectMeta  ProjectListItem
 }
 
 func New() (*UI, error) {

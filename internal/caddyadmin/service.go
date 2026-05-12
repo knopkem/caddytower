@@ -240,6 +240,97 @@ func (c *Client) Reconcile(ctx context.Context, desired Config) (bool, error) {
 	return true, nil
 }
 
+func (c *Client) ReconcileManagedRoutes(ctx context.Context, routes []HTTPRoute, managedHosts []string) (bool, error) {
+	current, err := c.GetConfig(ctx)
+	if err != nil {
+		return false, err
+	}
+
+	merged, err := MergeManagedRoutes(current, routes, managedHosts)
+	if err != nil {
+		return false, err
+	}
+
+	currentNormalized, err := normalizeJSON(current)
+	if err != nil {
+		return false, fmt.Errorf("normalize current config: %w", err)
+	}
+	desiredNormalized, err := normalizeJSON(merged)
+	if err != nil {
+		return false, fmt.Errorf("normalize merged config: %w", err)
+	}
+	if bytes.Equal(currentNormalized, desiredNormalized) {
+		return false, nil
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/load", bytes.NewReader(merged))
+	if err != nil {
+		return false, fmt.Errorf("build raw load request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return false, fmt.Errorf("send raw load request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return false, fmt.Errorf("read raw load response: %w", err)
+	}
+	if resp.StatusCode/100 != 2 {
+		return false, fmt.Errorf("load caddy config: unexpected status %s: %s", resp.Status, strings.TrimSpace(string(body)))
+	}
+
+	return true, nil
+}
+
+func MergeManagedRoutes(current json.RawMessage, routes []HTTPRoute, managedHosts []string) (json.RawMessage, error) {
+	var root map[string]any
+	if len(bytes.TrimSpace(current)) == 0 {
+		root = map[string]any{}
+	} else if err := json.Unmarshal(current, &root); err != nil {
+		return nil, fmt.Errorf("unmarshal current config: %w", err)
+	}
+
+	apps := ensureMap(root, "apps")
+	httpApp := ensureMap(apps, "http")
+	servers := ensureMap(httpApp, "servers")
+	server := ensureMap(servers, defaultServerName)
+
+	if _, ok := server["listen"]; !ok {
+		server["listen"] = []any{":80", ":443"}
+	}
+
+	preserved := make([]any, 0)
+	if existing, ok := server["routes"].([]any); ok {
+		for _, item := range existing {
+			if !routeMatchesManagedHosts(item, managedHosts) {
+				preserved = append(preserved, item)
+			}
+		}
+	}
+
+	desired := BuildConfig(routes)
+	desiredRoutes := make([]any, 0, len(desired.Apps.HTTP.Servers[defaultServerName].Routes))
+	for _, route := range desired.Apps.HTTP.Servers[defaultServerName].Routes {
+		var routeMap map[string]any
+		body, err := json.Marshal(route)
+		if err != nil {
+			return nil, fmt.Errorf("marshal desired route: %w", err)
+		}
+		if err := json.Unmarshal(body, &routeMap); err != nil {
+			return nil, fmt.Errorf("unmarshal desired route: %w", err)
+		}
+		desiredRoutes = append(desiredRoutes, routeMap)
+	}
+
+	server["routes"] = append(preserved, desiredRoutes...)
+
+	return json.Marshal(root)
+}
+
 func normalizeJSON(raw []byte) ([]byte, error) {
 	var decoded any
 	if err := json.Unmarshal(raw, &decoded); err != nil {
@@ -247,4 +338,51 @@ func normalizeJSON(raw []byte) ([]byte, error) {
 	}
 
 	return json.Marshal(decoded)
+}
+
+func ensureMap(root map[string]any, key string) map[string]any {
+	if value, ok := root[key].(map[string]any); ok {
+		return value
+	}
+	next := map[string]any{}
+	root[key] = next
+	return next
+}
+
+func routeMatchesManagedHosts(route any, managedHosts []string) bool {
+	routeMap, ok := route.(map[string]any)
+	if !ok {
+		return false
+	}
+
+	matchers, ok := routeMap["match"].([]any)
+	if !ok {
+		return false
+	}
+
+	managedSet := map[string]struct{}{}
+	for _, host := range managedHosts {
+		managedSet[host] = struct{}{}
+	}
+
+	for _, matcher := range matchers {
+		matcherMap, ok := matcher.(map[string]any)
+		if !ok {
+			continue
+		}
+		hosts, ok := matcherMap["host"].([]any)
+		if !ok {
+			continue
+		}
+		for _, host := range hosts {
+			hostValue, ok := host.(string)
+			if ok {
+				if _, exists := managedSet[hostValue]; exists {
+					return true
+				}
+			}
+		}
+	}
+
+	return false
 }

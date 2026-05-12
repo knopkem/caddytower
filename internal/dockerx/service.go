@@ -286,6 +286,17 @@ func (s *Service) RecreateContainer(ctx context.Context, spec ContainerSpec) (Co
 	return s.InspectContainer(ctx, created.ID)
 }
 
+func (s *Service) RemoveContainer(ctx context.Context, containerName string) error {
+	timeoutSeconds := 10
+	if err := s.api.ContainerStop(ctx, containerName, container.StopOptions{Timeout: &timeoutSeconds}); err != nil && !errdefs.IsNotFound(err) {
+		return fmt.Errorf("stop container %s: %w", containerName, err)
+	}
+	if err := s.api.ContainerRemove(ctx, containerName, container.RemoveOptions{Force: true}); err != nil && !errdefs.IsNotFound(err) {
+		return fmt.Errorf("remove container %s: %w", containerName, err)
+	}
+	return nil
+}
+
 func (s *Service) StreamLogs(ctx context.Context, containerName string, tail int) (io.ReadCloser, error) {
 	tailValue := "200"
 	if tail > 0 {

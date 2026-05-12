@@ -20,6 +20,28 @@ go run ./cmd/caddytower
 
 Open <http://localhost:8080>.
 
+## VPS bootstrap
+
+```bash
+./scripts/bootstrap-caddytower.sh /opt/caddytower
+```
+
+The bootstrap script:
+
+- creates the external Docker `edge` network if needed
+- copies the compose file and example env file into `/opt/caddytower`
+- generates `CADDYTOWER_MASTER_KEY` on first run
+- starts the controller once `CADDYTOWER_IMAGE` has been configured
+
+The initial compose file binds CaddyTower to `127.0.0.1:8080` only, so the
+recommended first-time setup is an SSH tunnel:
+
+```bash
+ssh -L 8080:127.0.0.1:8080 ubuntu@your-vps
+```
+
+Then open <http://127.0.0.1:8080/setup>.
+
 ## Environment
 
 | Variable | Default | Purpose |

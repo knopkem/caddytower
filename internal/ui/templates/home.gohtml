@@ -20,67 +20,179 @@
           </p>
         </div>
       </header>
-<section class="grid">
-  <article class="card">
-    <h2>Admin session</h2>
-    <dl class="kv">
-      <div><dt>Signed in as</dt><dd>{{if .CurrentUser}}{{.CurrentUser}}{{else}}anonymous{{end}}</dd></div>
-    </dl>
-    {{if .CSRFToken}}
-    <form method="post" action="/logout" class="inline-form">
-      <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
-      <button type="submit" class="secondary">Sign out</button>
-    </form>
-    {{end}}
-  </article>
+      <section class="grid">
+        <article class="card">
+          <h2>Admin session</h2>
+          <dl class="kv">
+            <div><dt>Signed in as</dt><dd>{{if .CurrentUser}}{{.CurrentUser}}{{else}}anonymous{{end}}</dd></div>
+            <div><dt>Configured projects</dt><dd>{{len .Projects}}</dd></div>
+            <div><dt>Root domain</dt><dd>{{if .Settings.RootDomain}}{{.Settings.RootDomain}}{{else}}not configured{{end}}</dd></div>
+          </dl>
+          {{if .CSRFToken}}
+          <form method="post" action="/logout" class="inline-form">
+            <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+            <button type="submit" class="secondary">Sign out</button>
+          </form>
+          {{end}}
+        </article>
 
-  <article class="card">
-    <h2>What exists now</h2>
-    <ul>
-      <li>Embedded templates and static assets</li>
-      <li>Health and version endpoints</li>
-      <li>Security headers middleware</li>
-      <li>Distroless-ready Docker image</li>
-      <li>GitHub Actions pipeline for test/build/push</li>
-    </ul>
-  </article>
+        <article class="card">
+          <h2>Runtime overview</h2>
+          <dl class="kv">
+            <div><dt>Origin hostname</dt><dd>{{if .Settings.OriginHostname}}{{.Settings.OriginHostname}}{{else}}not configured{{end}}</dd></div>
+            <div><dt>Cloudflare zone</dt><dd>{{if .Settings.CloudflareZoneID}}{{.Settings.CloudflareZoneID}}{{else}}not configured{{end}}</dd></div>
+            <div><dt>Cloudflare token</dt><dd>{{if .Settings.CloudflareTokenPresent}}configured{{else}}not configured{{end}}</dd></div>
+            <div><dt>Cloudflare proxy</dt><dd>{{if .Settings.CloudflareProxied}}enabled{{else}}disabled{{end}}</dd></div>
+          </dl>
+        </article>
+      </section>
 
-  <article class="card">
-    <h2>Next implementation slices</h2>
-    <ol>
-      <li>SQLite schema and migrations</li>
-      <li>Secret encryption with a master key</li>
-      <li>Project CRUD and Caddy reconciliation</li>
-      <li>Shared database engine provisioning</li>
-    </ol>
-  </article>
-</section>
+      {{if .ErrorMessage}}<p class="alert">{{.ErrorMessage}}</p>{{end}}
+      {{if .InfoMessage}}<p class="notice">{{.InfoMessage}}</p>{{end}}
 
-<section class="grid">
-  <article class="card">
-    <h2>Runtime config</h2>
-    <dl class="kv">
-      <div><dt>HTTP address</dt><dd>{{.Config.HTTPAddr}}</dd></div>
-      <div><dt>Public base URL</dt><dd>{{.Config.PublicBaseURL}}</dd></div>
-      <div><dt>Data dir</dt><dd>{{.Config.DataDir}}</dd></div>
-      <div><dt>State DB</dt><dd>{{.Config.StateDBPath}}</dd></div>
-      <div><dt>Caddy admin</dt><dd>{{.Config.CaddyAdminURL}}</dd></div>
-      <div><dt>Root domain</dt><dd>{{if .Config.RootDomain}}{{.Config.RootDomain}}{{else}}not set{{end}}</dd></div>
-      <div><dt>Docker host</dt><dd>{{if .Config.DockerHost}}{{.Config.DockerHost}}{{else}}docker default{{end}}</dd></div>
-      <div><dt>Master key</dt><dd>{{if .Config.MasterKeySet}}configured{{else}}not set yet{{end}}</dd></div>
-    </dl>
-  </article>
+      <section class="grid">
+        <article class="card">
+          <h2>Deployment settings</h2>
+          <form method="post" action="/settings" class="stack">
+            <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+            <label class="field">
+              <span>Root domain</span>
+              <input type="text" name="root_domain" value="{{.Settings.RootDomain}}" placeholder="pacsnode.com">
+            </label>
+            <label class="field">
+              <span>Origin hostname</span>
+              <input type="text" name="origin_hostname" value="{{.Settings.OriginHostname}}" placeholder="vps212846.vps.ovh.ca">
+            </label>
+            <label class="field">
+              <span>Cloudflare zone ID</span>
+              <input type="text" name="cloudflare_zone_id" value="{{.Settings.CloudflareZoneID}}">
+            </label>
+            <label class="field">
+              <span>Cloudflare API token</span>
+              <input type="password" name="cloudflare_api_token" value="" placeholder="{{if .Settings.CloudflareTokenPresent}}Configured - leave blank to keep{{else}}Paste token{{end}}">
+            </label>
+            <label class="checkbox">
+              <input type="checkbox" name="cloudflare_proxied" {{if .Settings.CloudflareProxied}}checked{{end}}>
+              <span>Proxy records through Cloudflare</span>
+            </label>
+            <button type="submit">Save settings</button>
+          </form>
+        </article>
 
-  <article class="card">
-    <h2>Build info</h2>
-    <dl class="kv">
-      <div><dt>Version</dt><dd>{{.Version.Version}}</dd></div>
-      <div><dt>Commit</dt><dd>{{.Version.Commit}}</dd></div>
-      <div><dt>Date</dt><dd>{{.Version.Date}}</dd></div>
-      <div><dt>Rendered</dt><dd>{{.GeneratedAt.Format "2006-01-02 15:04:05 MST"}}</dd></div>
-    </dl>
-  </article>
-</section>
+        <article class="card">
+          <h2>Create web project</h2>
+          <form method="post" action="/projects" class="stack">
+            <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+            <label class="field">
+              <span>Name</span>
+              <input type="text" name="name" value="{{.CreateForm.Name}}" required>
+            </label>
+            <label class="field">
+              <span>Slug</span>
+              <input type="text" name="slug" value="{{.CreateForm.Slug}}" pattern="[a-z0-9][a-z0-9-]{1,62}" required>
+            </label>
+            <label class="field">
+              <span>Image reference</span>
+              <input type="text" name="image_ref" value="{{.CreateForm.ImageRef}}" placeholder="ghcr.io/owner/app:latest" required>
+            </label>
+            <label class="field">
+              <span>Subdomain</span>
+              <input type="text" name="subdomain" value="{{.CreateForm.Subdomain}}" placeholder="books" required>
+            </label>
+            <label class="field">
+              <span>Internal port</span>
+              <input type="number" name="internal_port" min="1" max="65535" value="{{.CreateForm.InternalPort}}" required>
+            </label>
+            <label class="checkbox">
+              <input type="checkbox" name="watchtower_enabled" {{if .CreateForm.WatchtowerEnabled}}checked{{end}}>
+              <span>Enable Watchtower updates</span>
+            </label>
+            <label class="field">
+              <span>Environment variables</span>
+              <textarea name="env_text" rows="8" placeholder="KEY=value&#10;ANOTHER=value">{{.CreateForm.EnvText}}</textarea>
+            </label>
+            <button type="submit">Create and deploy</button>
+          </form>
+        </article>
+      </section>
+
+      <section class="card">
+        <div class="section-head">
+          <h2>Projects</h2>
+          <p class="muted">Managed web projects deployed through Docker, Caddy, and Cloudflare.</p>
+        </div>
+        {{if .Projects}}
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Name</th>
+                <th>URL</th>
+                <th>Image</th>
+                <th>Status</th>
+                <th>Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {{range .Projects}}
+              <tr>
+                <td>
+                  <strong>{{.Name}}</strong>
+                  <div class="muted mono">{{.ContainerName}}</div>
+                </td>
+                <td>
+                  <div>{{if .FullDomain}}{{.FullDomain}}{{else}}{{.Subdomain}}{{end}}</div>
+                  <div class="muted mono">:{{.InternalPort}}</div>
+                </td>
+                <td class="mono">{{.ImageRef}}</td>
+                <td>{{.Status}}</td>
+                <td>
+                  <div class="actions">
+                    <a class="button-link" href="/projects/{{.ID}}">Edit</a>
+                    <form method="post" action="/projects/{{.ID}}/deploy">
+                      <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+                      <button type="submit" class="secondary">Redeploy</button>
+                    </form>
+                    <form method="post" action="/projects/{{.ID}}/delete">
+                      <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+                      <button type="submit" class="danger">Delete</button>
+                    </form>
+                  </div>
+                </td>
+              </tr>
+              {{end}}
+            </tbody>
+          </table>
+        </div>
+        {{else}}
+        <p class="muted">No projects yet.</p>
+        {{end}}
+      </section>
+
+      <section class="grid">
+        <article class="card">
+          <h2>Runtime config</h2>
+          <dl class="kv">
+            <div><dt>HTTP address</dt><dd>{{.Config.HTTPAddr}}</dd></div>
+            <div><dt>Public base URL</dt><dd>{{.Config.PublicBaseURL}}</dd></div>
+            <div><dt>Data dir</dt><dd>{{.Config.DataDir}}</dd></div>
+            <div><dt>State DB</dt><dd>{{.Config.StateDBPath}}</dd></div>
+            <div><dt>Caddy admin</dt><dd>{{.Config.CaddyAdminURL}}</dd></div>
+            <div><dt>Docker host</dt><dd>{{if .Config.DockerHost}}{{.Config.DockerHost}}{{else}}docker default{{end}}</dd></div>
+            <div><dt>Master key</dt><dd>{{if .Config.MasterKeySet}}configured{{else}}not set yet{{end}}</dd></div>
+          </dl>
+        </article>
+
+        <article class="card">
+          <h2>Build info</h2>
+          <dl class="kv">
+            <div><dt>Version</dt><dd>{{.Version.Version}}</dd></div>
+            <div><dt>Commit</dt><dd>{{.Version.Commit}}</dd></div>
+            <div><dt>Date</dt><dd>{{.Version.Date}}</dd></div>
+            <div><dt>Rendered</dt><dd>{{.GeneratedAt.Format "2006-01-02 15:04:05 MST"}}</dd></div>
+          </dl>
+        </article>
+      </section>
     </main>
   </body>
 </html>

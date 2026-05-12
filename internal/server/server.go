@@ -4,13 +4,16 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
 	"caddytower/internal/auth"
 	"caddytower/internal/config"
+	"caddytower/internal/projects"
 	"caddytower/internal/store"
 	"caddytower/internal/ui"
 	"caddytower/internal/version"
@@ -20,26 +23,28 @@ import (
 )
 
 type Server struct {
-	cfg     config.Config
-	ui      *ui.UI
-	logger  *slog.Logger
-	version version.Info
-	ready   readinessChecker
-	auth    *auth.Service
+	cfg      config.Config
+	ui       *ui.UI
+	logger   *slog.Logger
+	version  version.Info
+	ready    readinessChecker
+	auth     *auth.Service
+	projects *projects.Service
 }
 
 type readinessChecker interface {
 	Ping(context.Context) error
 }
 
-func New(cfg config.Config, webUI *ui.UI, logger *slog.Logger, build version.Info, ready readinessChecker, authService *auth.Service) *Server {
+func New(cfg config.Config, webUI *ui.UI, logger *slog.Logger, build version.Info, ready readinessChecker, authService *auth.Service, projectService *projects.Service) *Server {
 	return &Server{
-		cfg:     cfg,
-		ui:      webUI,
-		logger:  logger,
-		version: build,
-		ready:   ready,
-		auth:    authService,
+		cfg:      cfg,
+		ui:       webUI,
+		logger:   logger,
+		version:  build,
+		ready:    ready,
+		auth:     authService,
+		projects: projectService,
 	}
 }
 
@@ -65,6 +70,14 @@ func (s *Server) Router() http.Handler {
 		router.Get("/login", s.handleLoginForm)
 		router.Post("/login", s.handleLoginSubmit)
 		router.Post("/logout", s.handleLogout)
+		if s.projects != nil {
+			router.Post("/settings", s.handleSettingsSubmit)
+			router.Post("/projects", s.handleProjectCreate)
+			router.Get("/projects/{projectID}", s.handleProjectPage)
+			router.Post("/projects/{projectID}", s.handleProjectUpdate)
+			router.Post("/projects/{projectID}/deploy", s.handleProjectRedeploy)
+			router.Post("/projects/{projectID}/delete", s.handleProjectDelete)
+		}
 	}
 
 	return router
@@ -94,15 +107,48 @@ func (s *Server) handleRoot(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		s.renderDashboard(w, currentUser.Email, s.auth.EnsureCSRFCookie(w, r))
+		s.renderDashboard(w, r, currentUser.Email, ui.ProjectFormData{
+			InternalPort:      3000,
+			WatchtowerEnabled: true,
+		}, "", r.URL.Query().Get("info"))
 		return
 	}
 
-	s.renderDashboard(w, "", "")
+	s.renderDashboard(w, r, "", ui.ProjectFormData{}, "", "")
 }
 
-func (s *Server) renderDashboard(w http.ResponseWriter, currentUser, csrfToken string) {
+func (s *Server) renderDashboard(w http.ResponseWriter, r *http.Request, currentUser string, createForm ui.ProjectFormData, errorMessage, infoMessage string) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+
+	settings := ui.SettingsFormData{}
+	projectItems := []ui.ProjectListItem{}
+	if s.projects != nil {
+		dashboard, err := s.projects.Dashboard(r.Context())
+		if err != nil {
+			s.logger.Error("load dashboard", "error", err)
+			http.Error(w, "failed to load dashboard", http.StatusInternalServerError)
+			return
+		}
+		settings = ui.SettingsFormData{
+			RootDomain:             dashboard.Settings.RootDomain,
+			OriginHostname:         dashboard.Settings.OriginHostname,
+			CloudflareZoneID:       dashboard.Settings.CloudflareZoneID,
+			CloudflareTokenPresent: dashboard.Settings.CloudflareTokenPresent,
+			CloudflareProxied:      dashboard.Settings.CloudflareProxied,
+		}
+		for _, project := range dashboard.Projects {
+			projectItems = append(projectItems, projectListItem(project))
+		}
+	}
+
+	if createForm.InternalPort == 0 {
+		createForm.InternalPort = 3000
+	}
+
+	csrfToken := ""
+	if s.auth != nil {
+		csrfToken = s.auth.EnsureCSRFCookie(w, r)
+	}
 
 	data := ui.HomePageData{
 		GeneratedAt: time.Now().UTC(),
@@ -120,7 +166,12 @@ func (s *Server) renderDashboard(w http.ResponseWriter, currentUser, csrfToken s
 			DockerHost:    s.cfg.DockerHost,
 			MasterKeySet:  s.cfg.MasterKey != "",
 		},
-		CurrentUser: currentUser,
+		CurrentUser:  currentUser,
+		ErrorMessage: errorMessage,
+		InfoMessage:  infoMessage,
+		Settings:     settings,
+		CreateForm:   createForm,
+		Projects:     projectItems,
 	}
 
 	if err := s.ui.Render(w, "home.gohtml", data); err != nil {
@@ -231,6 +282,152 @@ func (s *Server) handleLoginForm(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func (s *Server) handleSettingsSubmit(w http.ResponseWriter, r *http.Request) {
+	user, ok := s.requireAuthenticated(w, r)
+	if !ok {
+		return
+	}
+	if !s.auth.ValidateCSRF(r) {
+		http.Error(w, "invalid csrf token", http.StatusForbidden)
+		return
+	}
+
+	err := s.projects.SaveSettings(r.Context(), projects.SettingsInput{
+		RootDomain:        r.FormValue("root_domain"),
+		OriginHostname:    r.FormValue("origin_hostname"),
+		CloudflareZoneID:  r.FormValue("cloudflare_zone_id"),
+		CloudflareToken:   r.FormValue("cloudflare_api_token"),
+		CloudflareProxied: projects.ParseBoolCheckbox(r.FormValue("cloudflare_proxied")),
+	}, user.ID)
+	if err != nil {
+		s.renderDashboard(w, r, user.Email, ui.ProjectFormData{
+			InternalPort:      3000,
+			WatchtowerEnabled: true,
+		}, err.Error(), "")
+		return
+	}
+
+	http.Redirect(w, r, "/?info=Settings+saved", http.StatusFound)
+}
+
+func (s *Server) handleProjectCreate(w http.ResponseWriter, r *http.Request) {
+	user, ok := s.requireAuthenticated(w, r)
+	if !ok {
+		return
+	}
+	if !s.auth.ValidateCSRF(r) {
+		http.Error(w, "invalid csrf token", http.StatusForbidden)
+		return
+	}
+
+	input, createForm, err := projectInputFromRequest(r, "")
+	if err != nil {
+		s.renderDashboard(w, r, user.Email, createForm, err.Error(), "")
+		return
+	}
+
+	project, err := s.projects.CreateWebProject(r.Context(), input, user.ID)
+	if err != nil {
+		s.renderDashboard(w, r, user.Email, createForm, err.Error(), "")
+		return
+	}
+
+	http.Redirect(w, r, "/projects/"+project.ID+"?info=Project+saved", http.StatusFound)
+}
+
+func (s *Server) handleProjectPage(w http.ResponseWriter, r *http.Request) {
+	user, ok := s.requireAuthenticated(w, r)
+	if !ok {
+		return
+	}
+
+	project, _, err := s.projects.GetProject(r.Context(), chi.URLParam(r, "projectID"))
+	if err != nil {
+		s.renderProjectError(w, err)
+		return
+	}
+
+	s.renderProjectPage(w, r, user.Email, project, ui.ProjectFormData{
+		ID:                project.ID,
+		Action:            "/projects/" + project.ID,
+		SubmitLabel:       "Save and deploy",
+		Name:              project.Name,
+		Slug:              project.Slug,
+		ImageRef:          project.ImageRef,
+		Subdomain:         project.Subdomain,
+		InternalPort:      project.InternalPort,
+		WatchtowerEnabled: project.WatchtowerEnabled,
+		EnvText:           project.EnvText,
+		SlugReadOnly:      true,
+	}, "", r.URL.Query().Get("info"))
+}
+
+func (s *Server) handleProjectUpdate(w http.ResponseWriter, r *http.Request) {
+	user, ok := s.requireAuthenticated(w, r)
+	if !ok {
+		return
+	}
+	if !s.auth.ValidateCSRF(r) {
+		http.Error(w, "invalid csrf token", http.StatusForbidden)
+		return
+	}
+
+	projectID := chi.URLParam(r, "projectID")
+	input, formData, err := projectInputFromRequest(r, projectID)
+	if err != nil {
+		s.renderProjectWithFallback(w, r, user.Email, projectID, formData, err.Error(), "")
+		return
+	}
+
+	project, err := s.projects.UpdateWebProject(r.Context(), input, user.ID)
+	if err != nil {
+		s.renderProjectWithFallback(w, r, user.Email, projectID, formData, err.Error(), "")
+		return
+	}
+
+	http.Redirect(w, r, "/projects/"+project.ID+"?info=Project+updated", http.StatusFound)
+}
+
+func (s *Server) handleProjectRedeploy(w http.ResponseWriter, r *http.Request) {
+	user, ok := s.requireAuthenticated(w, r)
+	if !ok {
+		return
+	}
+	if !s.auth.ValidateCSRF(r) {
+		http.Error(w, "invalid csrf token", http.StatusForbidden)
+		return
+	}
+
+	project, err := s.projects.RedeployProject(r.Context(), chi.URLParam(r, "projectID"), user.ID)
+	if err != nil {
+		s.renderProjectWithFallback(w, r, user.Email, chi.URLParam(r, "projectID"), ui.ProjectFormData{}, err.Error(), "")
+		return
+	}
+
+	http.Redirect(w, r, "/projects/"+project.ID+"?info=Project+redeployed", http.StatusFound)
+}
+
+func (s *Server) handleProjectDelete(w http.ResponseWriter, r *http.Request) {
+	user, ok := s.requireAuthenticated(w, r)
+	if !ok {
+		return
+	}
+	if !s.auth.ValidateCSRF(r) {
+		http.Error(w, "invalid csrf token", http.StatusForbidden)
+		return
+	}
+
+	if err := s.projects.DeleteProject(r.Context(), chi.URLParam(r, "projectID"), user.ID); err != nil {
+		s.renderDashboard(w, r, user.Email, ui.ProjectFormData{
+			InternalPort:      3000,
+			WatchtowerEnabled: true,
+		}, err.Error(), "")
+		return
+	}
+
+	http.Redirect(w, r, "/?info=Project+deleted", http.StatusFound)
+}
+
 func (s *Server) handleLoginSubmit(w http.ResponseWriter, r *http.Request) {
 	if !s.auth.ValidateCSRF(r) {
 		http.Error(w, "invalid csrf token", http.StatusForbidden)
@@ -302,6 +499,149 @@ func (s *Server) currentUser(w http.ResponseWriter, r *http.Request) (auth.User,
 	}
 
 	return user, true, nil
+}
+
+func (s *Server) requireAuthenticated(w http.ResponseWriter, r *http.Request) (auth.User, bool) {
+	required, err := s.auth.BootstrapRequired(r.Context())
+	if err != nil {
+		s.logger.Error("check bootstrap status", "error", err)
+		http.Error(w, "failed to check bootstrap status", http.StatusInternalServerError)
+		return auth.User{}, false
+	}
+	if required {
+		http.Redirect(w, r, "/setup", http.StatusFound)
+		return auth.User{}, false
+	}
+
+	user, ok, err := s.currentUser(w, r)
+	if err != nil {
+		s.logger.Error("authenticate request", "error", err)
+		http.Error(w, "failed to authenticate request", http.StatusInternalServerError)
+		return auth.User{}, false
+	}
+	if !ok {
+		http.Redirect(w, r, "/login", http.StatusFound)
+		return auth.User{}, false
+	}
+	return user, true
+}
+
+func (s *Server) renderProjectPage(w http.ResponseWriter, r *http.Request, currentUser string, project projects.Project, form ui.ProjectFormData, errorMessage, infoMessage string) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+
+	data := ui.ProjectPageData{
+		PageTitle:    "CaddyTower | " + project.Name,
+		Headline:     "Edit " + project.Name,
+		CSRFToken:    s.auth.EnsureCSRFCookie(w, r),
+		CurrentUser:  currentUser,
+		InfoMessage:  infoMessage,
+		ErrorMessage: errorMessage,
+		Project:      form,
+		ProjectMeta:  projectListItem(project),
+	}
+
+	if err := s.ui.Render(w, "project.gohtml", data); err != nil {
+		s.logger.Error("render project page", "error", err)
+		http.Error(w, "failed to render page", http.StatusInternalServerError)
+	}
+}
+
+func (s *Server) renderProjectWithFallback(w http.ResponseWriter, r *http.Request, currentUser, projectID string, form ui.ProjectFormData, errorMessage, infoMessage string) {
+	project, _, err := s.projects.GetProject(r.Context(), projectID)
+	if err != nil {
+		s.renderProjectError(w, err)
+		return
+	}
+	if form.Action == "" {
+		form = ui.ProjectFormData{
+			ID:                project.ID,
+			Action:            "/projects/" + project.ID,
+			SubmitLabel:       "Save and deploy",
+			Name:              project.Name,
+			Slug:              project.Slug,
+			ImageRef:          project.ImageRef,
+			Subdomain:         project.Subdomain,
+			InternalPort:      project.InternalPort,
+			WatchtowerEnabled: project.WatchtowerEnabled,
+			EnvText:           project.EnvText,
+			SlugReadOnly:      true,
+		}
+	}
+	s.renderProjectPage(w, r, currentUser, project, form, errorMessage, infoMessage)
+}
+
+func (s *Server) renderProjectError(w http.ResponseWriter, err error) {
+	if errors.Is(err, store.ErrNotFound) {
+		http.Error(w, "project not found", http.StatusNotFound)
+		return
+	}
+	s.logger.Error("project error", "error", err)
+	http.Error(w, "failed to load project", http.StatusInternalServerError)
+}
+
+func projectInputFromRequest(r *http.Request, projectID string) (projects.WebProjectInput, ui.ProjectFormData, error) {
+	internalPort, err := strconv.Atoi(strings.TrimSpace(r.FormValue("internal_port")))
+	if err != nil {
+		form := ui.ProjectFormData{
+			ID:                projectID,
+			Action:            "/projects/" + projectID,
+			SubmitLabel:       "Save and deploy",
+			Name:              strings.TrimSpace(r.FormValue("name")),
+			Slug:              strings.TrimSpace(r.FormValue("slug")),
+			ImageRef:          strings.TrimSpace(r.FormValue("image_ref")),
+			Subdomain:         strings.TrimSpace(r.FormValue("subdomain")),
+			EnvText:           r.FormValue("env_text"),
+			WatchtowerEnabled: projects.ParseBoolCheckbox(r.FormValue("watchtower_enabled")),
+			SlugReadOnly:      projectID != "",
+		}
+		return projects.WebProjectInput{}, form, fmt.Errorf("internal port must be a number")
+	}
+
+	input := projects.WebProjectInput{
+		ID:                projectID,
+		Name:              strings.TrimSpace(r.FormValue("name")),
+		Slug:              strings.TrimSpace(r.FormValue("slug")),
+		ImageRef:          strings.TrimSpace(r.FormValue("image_ref")),
+		Subdomain:         strings.TrimSpace(r.FormValue("subdomain")),
+		InternalPort:      internalPort,
+		WatchtowerEnabled: projects.ParseBoolCheckbox(r.FormValue("watchtower_enabled")),
+		EnvText:           r.FormValue("env_text"),
+	}
+
+	form := ui.ProjectFormData{
+		ID:                projectID,
+		Action:            "/projects/" + projectID,
+		SubmitLabel:       "Save and deploy",
+		Name:              input.Name,
+		Slug:              input.Slug,
+		ImageRef:          input.ImageRef,
+		Subdomain:         input.Subdomain,
+		InternalPort:      input.InternalPort,
+		WatchtowerEnabled: input.WatchtowerEnabled,
+		EnvText:           input.EnvText,
+		SlugReadOnly:      projectID != "",
+	}
+	if projectID == "" {
+		form.Action = "/projects"
+		form.SubmitLabel = "Create and deploy"
+	}
+
+	return input, form, nil
+}
+
+func projectListItem(project projects.Project) ui.ProjectListItem {
+	return ui.ProjectListItem{
+		ID:                project.ID,
+		Name:              project.Name,
+		Slug:              project.Slug,
+		ImageRef:          project.ImageRef,
+		Subdomain:         project.Subdomain,
+		FullDomain:        project.FullDomain,
+		ContainerName:     project.ContainerName,
+		InternalPort:      project.InternalPort,
+		WatchtowerEnabled: project.WatchtowerEnabled,
+		Status:            project.Status,
+	}
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {

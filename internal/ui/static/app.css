@@ -141,6 +141,29 @@ h1 {
   color: var(--text);
 }
 
+.field textarea {
+  width: 100%;
+  padding: 12px 14px;
+  border: 1px solid var(--panel-border);
+  border-radius: 12px;
+  background: rgba(11, 16, 32, 0.8);
+  color: var(--text);
+  resize: vertical;
+  min-height: 120px;
+}
+
+.checkbox {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--muted);
+}
+
+.checkbox input {
+  width: 18px;
+  height: 18px;
+}
+
 button {
   width: fit-content;
   padding: 11px 16px;
@@ -157,6 +180,11 @@ button.secondary {
   color: var(--text);
 }
 
+button.danger {
+  background: #7a2f3d;
+  color: #fff4f4;
+}
+
 .inline-form {
   margin-top: 14px;
 }
@@ -167,6 +195,68 @@ button.secondary {
   border-radius: 12px;
   background: rgba(112, 64, 64, 0.2);
   color: #ffd0d0;
+}
+
+.notice {
+  padding: 12px 14px;
+  border: 1px solid #35587a;
+  border-radius: 12px;
+  background: rgba(53, 88, 122, 0.24);
+  color: #d7ecff;
+}
+
+.section-head {
+  margin-bottom: 16px;
+}
+
+.table-wrap {
+  overflow-x: auto;
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+th,
+td {
+  padding: 14px 12px;
+  border-top: 1px solid var(--panel-border);
+  text-align: left;
+  vertical-align: top;
+}
+
+th {
+  color: var(--muted);
+  font-weight: 600;
+}
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.actions.stacked {
+  flex-direction: column;
+  align-items: flex-start;
+}
+
+.button-link {
+  display: inline-block;
+  padding: 10px 14px;
+  border-radius: 12px;
+  background: #31415f;
+  color: var(--text);
+  text-decoration: none;
+  font-weight: 600;
+}
+
+.mono {
+  font-family:
+    ui-monospace, SFMono-Regular, SF Mono, Menlo, Consolas, "Liberation Mono",
+    monospace;
+  word-break: break-word;
 }
 
 @media (max-width: 640px) {

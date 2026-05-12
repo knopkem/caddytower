@@ -117,3 +117,48 @@ func TestReconcileLoadsWhenConfigDiffers(t *testing.T) {
 		t.Fatalf("load calls = %d", got)
 	}
 }
+
+func TestMergeManagedRoutesPreservesUnmanagedHosts(t *testing.T) {
+	t.Parallel()
+
+	current := []byte(`{
+		"apps": {
+			"http": {
+				"servers": {
+					"srv0": {
+						"listen": [":80", ":443"],
+						"routes": [
+							{"match":[{"host":["legacy.example.com"]}],"handle":[{"handler":"reverse_proxy","upstreams":[{"dial":"legacy:80"}]}],"terminal":true},
+							{"match":[{"host":["books.example.com"]}],"handle":[{"handler":"reverse_proxy","upstreams":[{"dial":"old-books:3000"}]}],"terminal":true}
+						]
+					}
+				}
+			}
+		},
+		"admin": {"disabled": false}
+	}`)
+
+	merged, err := MergeManagedRoutes(current, []HTTPRoute{
+		{Host: "books.example.com", Upstreams: []string{"books:3000"}},
+		{Host: "cameos.example.com", Upstreams: []string{"cameos:8080"}},
+	}, []string{"books.example.com", "cameos.example.com"})
+	if err != nil {
+		t.Fatalf("MergeManagedRoutes() error = %v", err)
+	}
+
+	var decoded map[string]any
+	if err := json.Unmarshal(merged, &decoded); err != nil {
+		t.Fatalf("json.Unmarshal() error = %v", err)
+	}
+
+	if _, ok := decoded["admin"]; !ok {
+		t.Fatal("expected admin block to be preserved")
+	}
+
+	servers := decoded["apps"].(map[string]any)["http"].(map[string]any)["servers"].(map[string]any)
+	routes := servers["srv0"].(map[string]any)["routes"].([]any)
+
+	if len(routes) != 3 {
+		t.Fatalf("route count = %d", len(routes))
+	}
+}

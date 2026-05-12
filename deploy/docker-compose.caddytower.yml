@@ -1,0 +1,24 @@
+services:
+  caddytower:
+    image: ${CADDYTOWER_IMAGE:-ghcr.io/REPLACE_WITH_OWNER/caddytower:latest}
+    container_name: caddytower
+    restart: unless-stopped
+    env_file:
+      - ./caddytower.env
+    ports:
+      - "127.0.0.1:8080:8080"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - caddytower-data:/data
+    networks:
+      - edge
+    labels:
+      com.centurylinklabs.watchtower.enable: "true"
+
+volumes:
+  caddytower-data:
+
+networks:
+  edge:
+    external: true
+
