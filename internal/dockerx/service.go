@@ -58,13 +58,15 @@ type PortBinding struct {
 }
 
 type Mount struct {
-	Source string
-	Target string
+	Source   string
+	Target   string
+	ReadOnly bool
 }
 
 type ContainerSpec struct {
 	Name           string
 	Image          string
+	Command        []string
 	Env            map[string]string
 	Labels         map[string]string
 	Network        string
@@ -72,6 +74,7 @@ type ContainerSpec struct {
 	ExposedPorts   []string
 	PublishedPorts []PortBinding
 	RestartPolicy  string
+	AutoRemove     bool
 }
 
 type ContainerSummary struct {
@@ -88,11 +91,14 @@ type ContainerInspect struct {
 	Name           string
 	Image          string
 	ImageID        string
+	Command        []string
 	Running        bool
 	Networks       []string
 	Labels         map[string]string
 	Env            []string
+	Mounts         []Mount
 	PublishedPorts []PortBinding
+	RestartPolicy  string
 }
 
 type ContainerStatsSnapshot struct {
@@ -198,22 +204,47 @@ func (s *Service) InspectContainer(ctx context.Context, containerName string) (C
 		return ContainerInspect{}, fmt.Errorf("inspect container %s: %w", containerName, err)
 	}
 
-	networks := make([]string, 0, len(item.NetworkSettings.Networks))
-	for networkName := range item.NetworkSettings.Networks {
+	config := item.Config
+	if config == nil {
+		config = &container.Config{}
+	}
+	hostConfig := item.HostConfig
+	if hostConfig == nil {
+		hostConfig = &container.HostConfig{}
+	}
+	networkSettings := item.NetworkSettings
+	if networkSettings == nil {
+		networkSettings = &types.NetworkSettings{}
+	}
+	networksMap := networkSettings.Networks
+	if networksMap == nil {
+		networksMap = map[string]*network.EndpointSettings{}
+	}
+
+	networks := make([]string, 0, len(networksMap))
+	for networkName := range networksMap {
 		networks = append(networks, networkName)
 	}
 	sort.Strings(networks)
 
+	running := false
+	if item.ContainerJSONBase != nil && item.ContainerJSONBase.State != nil {
+		running = item.ContainerJSONBase.State.Running
+	}
+
 	return ContainerInspect{
 		ID:             item.ID,
 		Name:           strings.TrimPrefix(item.Name, "/"),
-		Image:          item.Config.Image,
+		Image:          config.Image,
 		ImageID:        item.Image,
-		Running:        item.ContainerJSONBase.State.Running,
+		Command:        append([]string(nil), config.Cmd...),
+		Running:        running,
 		Networks:       networks,
-		Labels:         mapsClone(item.Config.Labels),
-		Env:            append([]string(nil), item.Config.Env...),
-		PublishedPorts: publishedPortsFromInspect(item.NetworkSettings.Ports),
+		Labels:         mapsClone(config.Labels),
+		Env:            append([]string(nil), config.Env...),
+		Mounts:         bindMountsFromInspect(hostConfig.Binds),
+		PublishedPorts: publishedPortsFromInspect(networkSettings.Ports),
+		RestartPolicy:  string(hostConfig.RestartPolicy.Name),
 	}, nil
 }
 
@@ -378,12 +409,14 @@ func (s *Service) RecreateContainer(ctx context.Context, spec ContainerSpec) (Co
 
 	config := &container.Config{
 		Image:        spec.Image,
+		Cmd:          append([]string(nil), spec.Command...),
 		Env:          envSlice(spec.Env),
 		Labels:       mapsClone(spec.Labels),
 		ExposedPorts: exposedPorts(spec.ExposedPorts, spec.PublishedPorts),
 	}
 	hostConfig := &container.HostConfig{
 		Binds:        bindMounts(spec.Mounts),
+		AutoRemove:   spec.AutoRemove,
 		PortBindings: portBindings(spec.PublishedPorts),
 		RestartPolicy: container.RestartPolicy{
 			Name: container.RestartPolicyMode(restartPolicyName(spec.RestartPolicy)),
@@ -583,10 +616,48 @@ func bindMounts(mounts []Mount) []string {
 
 	result := make([]string, 0, len(mounts))
 	for _, mount := range mounts {
-		result = append(result, mount.Source+":"+mount.Target)
+		value := mount.Source + ":" + mount.Target
+		if mount.ReadOnly {
+			value += ":ro"
+		}
+		result = append(result, value)
 	}
 	sort.Strings(result)
 	return result
+}
+
+func bindMountsFromInspect(values []string) []Mount {
+	if len(values) == 0 {
+		return nil
+	}
+
+	mounts := make([]Mount, 0, len(values))
+	for _, value := range values {
+		parts := strings.SplitN(value, ":", 3)
+		if len(parts) < 2 {
+			continue
+		}
+		mount := Mount{
+			Source: parts[0],
+			Target: parts[1],
+		}
+		if len(parts) == 3 {
+			for _, option := range strings.Split(parts[2], ",") {
+				if strings.EqualFold(strings.TrimSpace(option), "ro") {
+					mount.ReadOnly = true
+					break
+				}
+			}
+		}
+		mounts = append(mounts, mount)
+	}
+	sort.Slice(mounts, func(i, j int) bool {
+		if mounts[i].Source != mounts[j].Source {
+			return mounts[i].Source < mounts[j].Source
+		}
+		return mounts[i].Target < mounts[j].Target
+	})
+	return mounts
 }
 
 func exposedPorts(list []string, published []PortBinding) nat.PortSet {

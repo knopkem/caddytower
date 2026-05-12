@@ -71,14 +71,30 @@
             <div><dt>Data directory</dt><dd class="mono">{{.Config.DataDir}}</dd></div>
             <div><dt>State database</dt><dd class="mono">{{.Config.StateDBPath}}</dd></div>
             <div><dt>Secrets at rest</dt><dd>{{if .Config.MasterKeySet}}encrypted{{else}}not configured{{end}}</dd></div>
+            <div><dt>Running version</dt><dd>{{if .ControllerUpdate.CurrentVersion}}{{.ControllerUpdate.CurrentVersion}}{{else}}{{.Version.Version}}{{end}}</dd></div>
+            <div><dt>Latest release</dt><dd>{{if .ControllerUpdate.LatestRelease}}{{.ControllerUpdate.LatestRelease}}{{else}}unavailable{{end}}</dd></div>
           </dl>
           <div class="actions section-spacer">
+            {{if .ControllerUpdate.CanTrigger}}
+            <form method="post" action="/settings/update">
+              <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+              <button type="submit">{{if .ControllerUpdate.ButtonLabel}}{{.ControllerUpdate.ButtonLabel}}{{else}}Update and restart{{end}}</button>
+            </form>
+            {{end}}
             <form method="post" action="/settings/restart">
               <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
               <button type="submit" class="secondary">Restart CaddyTower</button>
             </form>
           </div>
-          <p class="field-hint section-spacer">Use this after changing env-backed options like backup settings or controller image configuration on the host.</p>
+          {{if .ControllerUpdate.Checked}}
+          <p class="field-hint section-spacer">
+            {{.ControllerUpdate.StatusMessage}}
+            {{if .ControllerUpdate.LatestReleaseURL}}<a href="{{.ControllerUpdate.LatestReleaseURL}}" target="_blank" rel="noreferrer">Open release</a>.{{end}}
+            {{if .ControllerUpdate.CurrentImage}} Current image: <span class="inline-code">{{.ControllerUpdate.CurrentImage}}</span>.{{end}}
+          </p>
+          {{else}}
+          <p class="field-hint section-spacer">Use this card to check the current release, trigger an on-demand controller update, or restart CaddyTower after host-level config changes.</p>
+          {{end}}
         </article>
       </section>
 

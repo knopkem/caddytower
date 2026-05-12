@@ -270,6 +270,23 @@ type SettingsPageData struct {
 	VPSStatus                 VPSStatusData
 	AuditFilter               string
 	AuditLogs                 []AuditLogItem
+	ControllerUpdate          ControllerUpdateData
+}
+
+type ControllerUpdateData struct {
+	Checked             bool
+	CurrentVersion      string
+	CurrentImage        string
+	LatestRelease       string
+	LatestReleaseURL    string
+	StatusMessage       string
+	UpdateAvailable     bool
+	CanTrigger          bool
+	ButtonLabel         string
+	TargetImage         string
+	TrackingLatest      bool
+	CurrentChannel      string
+	CurrentChannelIsDev bool
 }
 
 type GitHubRepositoryItem struct {

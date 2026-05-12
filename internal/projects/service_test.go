@@ -188,6 +188,67 @@ func TestSaveGitHubSettingsPersistsEncryptedRuntimeConfig(t *testing.T) {
 	}
 }
 
+func TestSelfUpdateControllerRecreatesControllerWithNewImage(t *testing.T) {
+	t.Parallel()
+
+	docker := &fakeDocker{
+		inspectByName: map[string]dockerx.ContainerInspect{
+			"caddytower": {
+				Name:           "caddytower",
+				Image:          "ghcr.io/knopkem/caddytower:v1.0.0",
+				Command:        []string{"serve"},
+				Networks:       []string{"edge"},
+				Labels:         map[string]string{"com.centurylinklabs.watchtower.enable": "true"},
+				Env:            []string{"CADDYTOWER_IMAGE=ghcr.io/knopkem/caddytower:v1.0.0", "CADDYTOWER_HTTP_ADDR=:8080"},
+				Mounts:         []dockerx.Mount{{Source: "/var/run/docker.sock", Target: "/var/run/docker.sock"}, {Source: "caddytower-data", Target: "/data"}},
+				PublishedPorts: []dockerx.PortBinding{{ContainerPort: "8080", HostPort: "8080", HostIP: "127.0.0.1", Protocol: "tcp"}},
+				RestartPolicy:  "unless-stopped",
+			},
+		},
+	}
+
+	err := SelfUpdateController(context.Background(), docker, "caddytower", "ghcr.io/knopkem/caddytower:v1.1.0")
+	if err != nil {
+		t.Fatalf("SelfUpdateController() error = %v", err)
+	}
+	if docker.pullCount != 1 || len(docker.pulledImages) != 1 || docker.pulledImages[0] != "ghcr.io/knopkem/caddytower:v1.1.0" {
+		t.Fatalf("pulled images = %#v", docker.pulledImages)
+	}
+	if docker.lastSpec.Name != "caddytower" || docker.lastSpec.Image != "ghcr.io/knopkem/caddytower:v1.1.0" {
+		t.Fatalf("lastSpec = %#v", docker.lastSpec)
+	}
+	if docker.lastSpec.Env["CADDYTOWER_IMAGE"] != "ghcr.io/knopkem/caddytower:v1.1.0" {
+		t.Fatalf("updated env = %#v", docker.lastSpec.Env)
+	}
+	if docker.lastSpec.RestartPolicy != "unless-stopped" || docker.lastSpec.Network != "edge" {
+		t.Fatalf("lastSpec = %#v", docker.lastSpec)
+	}
+}
+
+func TestStartControllerUpdateLaunchesHelperContainer(t *testing.T) {
+	t.Parallel()
+
+	stateStore := openProjectsStore(t)
+	docker := &fakeDocker{}
+	svc := New(config.Config{}, stateStore, nil, docker, nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
+
+	if err := svc.StartControllerUpdate(context.Background(), "ghcr.io/knopkem/caddytower:v1.1.0", ""); err != nil {
+		t.Fatalf("StartControllerUpdate() error = %v", err)
+	}
+	if docker.pullCount != 1 || docker.pulledImages[0] != "ghcr.io/knopkem/caddytower:v1.1.0" {
+		t.Fatalf("pulled images = %#v", docker.pulledImages)
+	}
+	if !strings.HasPrefix(docker.lastSpec.Name, "caddytower-updater-") {
+		t.Fatalf("helper name = %q", docker.lastSpec.Name)
+	}
+	if got := strings.Join(docker.lastSpec.Command, " "); !strings.Contains(got, "self-update") || !strings.Contains(got, "--target-image ghcr.io/knopkem/caddytower:v1.1.0") {
+		t.Fatalf("helper command = %#v", docker.lastSpec.Command)
+	}
+	if !docker.lastSpec.AutoRemove {
+		t.Fatalf("helper should auto-remove: %#v", docker.lastSpec)
+	}
+}
+
 func TestRestartControllerRestartsManagedContainer(t *testing.T) {
 	t.Parallel()
 
@@ -630,6 +691,8 @@ type fakeDocker struct {
 	recreateCount int
 	restartCount  int
 	removeCount   int
+	pullCount     int
+	pulledImages  []string
 	lastSpec      dockerx.ContainerSpec
 	logContent    string
 	containers    []dockerx.ContainerSummary
@@ -637,7 +700,11 @@ type fakeDocker struct {
 	statsByName   map[string]dockerx.ContainerStatsSnapshot
 }
 
-func (f *fakeDocker) PullImage(context.Context, string) error { return nil }
+func (f *fakeDocker) PullImage(_ context.Context, image string) error {
+	f.pullCount++
+	f.pulledImages = append(f.pulledImages, image)
+	return nil
+}
 func (f *fakeDocker) RecreateContainer(_ context.Context, spec dockerx.ContainerSpec) (dockerx.ContainerInspect, error) {
 	f.recreateCount++
 	f.lastSpec = spec

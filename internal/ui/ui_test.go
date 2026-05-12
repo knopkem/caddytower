@@ -92,6 +92,17 @@ func TestRenderSettings(t *testing.T) {
 		EffectivePublicBaseURL: "https://caddytower.pacsnode.com",
 		PublicAdminHost:        "caddytower.pacsnode.com",
 		SuggestedPublicBaseURL: "https://caddytower.pacsnode.com",
+		ControllerUpdate: ControllerUpdateData{
+			Checked:          true,
+			CurrentVersion:   "v1.0.0",
+			CurrentImage:     "ghcr.io/knopkem/caddytower:v1.0.0",
+			LatestRelease:    "v1.1.0",
+			StatusMessage:    "A newer release is available.",
+			UpdateAvailable:  true,
+			CanTrigger:       true,
+			ButtonLabel:      "Update and restart",
+			LatestReleaseURL: "https://github.com/knopkem/caddytower/releases/tag/v1.1.0",
+		},
 	})
 	if err != nil {
 		t.Fatalf("Render() error = %v", err)
@@ -112,6 +123,9 @@ func TestRenderSettings(t *testing.T) {
 	}
 	if !strings.Contains(body, "Save GitHub App settings") || !strings.Contains(body, "GitHub App private key PEM") {
 		t.Fatalf("rendered settings missing app-managed github form: %q", body)
+	}
+	if !strings.Contains(body, "Latest release") || !strings.Contains(body, "Update and restart") || !strings.Contains(body, "A newer release is available.") {
+		t.Fatalf("rendered settings missing controller update UI: %q", body)
 	}
 	if strings.Contains(body, "CADDYTOWER_GITHUB_APP_ID") || strings.Contains(body, "/run/secrets/github-app.pem") {
 		t.Fatalf("rendered settings should not include legacy env-based github guidance: %q", body)

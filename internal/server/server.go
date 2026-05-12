@@ -42,18 +42,20 @@ import (
 const defaultSetupEmail = "admin@example.com"
 
 type Server struct {
-	cfg          config.Config
-	ui           *ui.UI
-	logger       *slog.Logger
-	version      version.Info
-	ready        readinessChecker
-	auth         *auth.Service
-	projects     *projects.Service
-	backups      *backups.Service
-	monitor      *monitor.Service
-	github       *githubapp.Service
-	limiter      *webhookRateLimiter
-	imageChecker *imageRefChecker
+	cfg                          config.Config
+	ui                           *ui.UI
+	logger                       *slog.Logger
+	version                      version.Info
+	ready                        readinessChecker
+	auth                         *auth.Service
+	projects                     *projects.Service
+	backups                      *backups.Service
+	monitor                      *monitor.Service
+	github                       *githubapp.Service
+	limiter                      *webhookRateLimiter
+	imageChecker                 *imageRefChecker
+	controllerUpdateStatusFunc   func(context.Context) ui.ControllerUpdateData
+	scheduleControllerUpdateFunc func(string, string)
 }
 
 type readinessChecker interface {
@@ -65,20 +67,25 @@ func New(cfg config.Config, webUI *ui.UI, logger *slog.Logger, build version.Inf
 	if len(monitorServices) > 0 {
 		monitorService = monitorServices[0]
 	}
-	return &Server{
-		cfg:          cfg,
-		ui:           webUI,
-		logger:       logger,
-		version:      build,
-		ready:        ready,
-		auth:         authService,
-		projects:     projectService,
-		github:       githubService,
-		backups:      backupService,
-		monitor:      monitorService,
-		limiter:      newWebhookRateLimiter(10, time.Minute),
-		imageChecker: newImageRefChecker(),
+	srv := &Server{
+		cfg:                          cfg,
+		ui:                           webUI,
+		logger:                       logger,
+		version:                      build,
+		ready:                        ready,
+		auth:                         authService,
+		projects:                     projectService,
+		github:                       githubService,
+		backups:                      backupService,
+		monitor:                      monitorService,
+		limiter:                      newWebhookRateLimiter(10, time.Minute),
+		imageChecker:                 newImageRefChecker(),
+		controllerUpdateStatusFunc:   nil,
+		scheduleControllerUpdateFunc: nil,
 	}
+	srv.controllerUpdateStatusFunc = srv.controllerUpdateStatus
+	srv.scheduleControllerUpdateFunc = srv.scheduleControllerUpdate
+	return srv
 }
 
 func (s *Server) Router() http.Handler {
@@ -118,6 +125,7 @@ func (s *Server) Router() http.Handler {
 			router.Get("/settings", s.handleSettingsPage)
 			router.Post("/settings", s.handleSettingsSubmit)
 			router.Post("/settings/github", s.handleSettingsGitHubSubmit)
+			router.Post("/settings/update", s.handleSettingsUpdate)
 			router.Post("/settings/restart", s.handleSettingsRestart)
 			router.Get("/projects/import", s.handleImportPage)
 			router.Post("/projects/import", s.handleImportCreate)
@@ -674,6 +682,32 @@ func (s *Server) handleSettingsRestart(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/settings?info="+neturl.QueryEscape("Restarting CaddyTower to reload env-backed settings. Reload this page in a few seconds."), http.StatusFound)
 }
 
+func (s *Server) handleSettingsUpdate(w http.ResponseWriter, r *http.Request) {
+	user, ok := s.requireAuthenticated(w, r)
+	if !ok {
+		return
+	}
+	if !s.auth.ValidateCSRF(r) {
+		http.Error(w, "invalid csrf token", http.StatusForbidden)
+		return
+	}
+
+	update := s.controllerUpdateStatusFunc(r.Context())
+	if !update.CanTrigger || strings.TrimSpace(update.TargetImage) == "" {
+		s.renderSettingsPage(w, r, user.Email, "no controller update is available right now", "")
+		return
+	}
+
+	s.scheduleControllerUpdateFunc(update.TargetImage, user.ID)
+	message := "Starting controller update."
+	if update.UpdateAvailable && strings.TrimSpace(update.LatestRelease) != "" {
+		message = "Updating CaddyTower to " + update.LatestRelease + ". Reload this page in a moment."
+	} else if update.TrackingLatest {
+		message = "Pulling the latest controller image for the current channel. Reload this page in a moment."
+	}
+	http.Redirect(w, r, "/settings?info="+neturl.QueryEscape(message), http.StatusFound)
+}
+
 func (s *Server) scheduleControllerRestart(userID string) {
 	if s.projects == nil {
 		return
@@ -683,6 +717,19 @@ func (s *Server) scheduleControllerRestart(userID string) {
 		defer cancel()
 		if err := s.projects.RestartController(ctx, userID); err != nil {
 			s.logger.Error("restart caddytower", "error", err)
+		}
+	})
+}
+
+func (s *Server) scheduleControllerUpdate(targetImage, userID string) {
+	if s.projects == nil || strings.TrimSpace(targetImage) == "" {
+		return
+	}
+	time.AfterFunc(1200*time.Millisecond, func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		defer cancel()
+		if err := s.projects.StartControllerUpdate(ctx, targetImage, userID); err != nil {
+			s.logger.Error("update caddytower", "error", err)
 		}
 	})
 }
@@ -1486,6 +1533,7 @@ func (s *Server) renderSettingsPage(w http.ResponseWriter, r *http.Request, curr
 		BackupsIncludeEngineDumps: s.cfg.BackupsIncludeEngineDumps,
 		VPSStatus:                 s.vpsStatusData(),
 		AuditFilter:               strings.TrimSpace(r.URL.Query().Get("audit")),
+		ControllerUpdate:          s.controllerUpdateStatusFunc(r.Context()),
 	}
 	if s.projects != nil {
 		entries, err := s.projects.AuditLogs(r.Context(), data.AuditFilter, 50)

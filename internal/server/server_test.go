@@ -731,6 +731,174 @@ func TestSettingsPageShowsGitHubSetupGuideWhenUnconfigured(t *testing.T) {
 	}
 }
 
+func TestSettingsPageShowsControllerUpdateAction(t *testing.T) {
+	t.Parallel()
+
+	webUI, err := ui.New()
+	if err != nil {
+		t.Fatalf("ui.New() error = %v", err)
+	}
+
+	stateStore := openServerTestStore(t)
+	authService := auth.New(stateStore, nil, "http://localhost:8080")
+	fixedNow := time.Date(2026, 5, 12, 7, 0, 0, 0, time.UTC)
+	authService.SetNow(func() time.Time { return fixedNow })
+	enrollment, err := authService.GenerateEnrollment("admin@example.com")
+	if err != nil {
+		t.Fatalf("GenerateEnrollment() error = %v", err)
+	}
+	code, err := totp.GenerateCodeCustom(enrollment.Secret, fixedNow, totp.ValidateOpts{
+		Period:    30,
+		Skew:      1,
+		Digits:    otp.DigitsSix,
+		Algorithm: otp.AlgorithmSHA1,
+	})
+	if err != nil {
+		t.Fatalf("GenerateCodeCustom() error = %v", err)
+	}
+	token, _, err := authService.CreateInitialUser(context.Background(), "admin@example.com", "super-secure-password", "super-secure-password", enrollment.Secret, code, "127.0.0.1", "test-agent")
+	if err != nil {
+		t.Fatalf("CreateInitialUser() error = %v", err)
+	}
+
+	projectService := projects.New(config.Config{
+		HTTPAddr:      ":8080",
+		PublicBaseURL: "http://localhost:8080",
+		DataDir:       t.TempDir(),
+		CaddyAdminURL: "http://shared-caddy:2019",
+	}, stateStore, nil, nil, nil, newNoopLogger())
+	srv := New(config.Config{
+		HTTPAddr:      ":8080",
+		PublicBaseURL: "http://localhost:8080",
+		DataDir:       t.TempDir(),
+		CaddyAdminURL: "http://shared-caddy:2019",
+	}, webUI, newNoopLogger(), version.Info{Version: "v1.0.0"}, stateStore, authService, projectService, nil, nil)
+	srv.controllerUpdateStatusFunc = func(context.Context) ui.ControllerUpdateData {
+		return ui.ControllerUpdateData{
+			Checked:          true,
+			CurrentVersion:   "v1.0.0",
+			CurrentImage:     "ghcr.io/knopkem/caddytower:v1.0.0",
+			LatestRelease:    "v1.1.0",
+			LatestReleaseURL: "https://github.com/knopkem/caddytower/releases/tag/v1.1.0",
+			StatusMessage:    "A newer release is available.",
+			UpdateAvailable:  true,
+			CanTrigger:       true,
+			ButtonLabel:      "Update and restart",
+			TargetImage:      "ghcr.io/knopkem/caddytower:v1.1.0",
+		}
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/settings", nil)
+	req.AddCookie(&http.Cookie{Name: authService.SessionCookieName(), Value: token})
+	rec := httptest.NewRecorder()
+
+	srv.Router().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+	body := rec.Body.String()
+	for _, snippet := range []string{"Running version", "Latest release", "v1.1.0", "Update and restart", "A newer release is available.", "ghcr.io/knopkem/caddytower:v1.0.0"} {
+		if !strings.Contains(body, snippet) {
+			t.Fatalf("settings page missing update snippet %q: %q", snippet, body)
+		}
+	}
+}
+
+func TestSettingsUpdateSchedulesControllerUpdate(t *testing.T) {
+	t.Parallel()
+
+	webUI, err := ui.New()
+	if err != nil {
+		t.Fatalf("ui.New() error = %v", err)
+	}
+
+	stateStore := openServerTestStore(t)
+	authService := auth.New(stateStore, nil, "http://localhost:8080")
+	fixedNow := time.Date(2026, 5, 12, 7, 0, 0, 0, time.UTC)
+	authService.SetNow(func() time.Time { return fixedNow })
+	enrollment, err := authService.GenerateEnrollment("admin@example.com")
+	if err != nil {
+		t.Fatalf("GenerateEnrollment() error = %v", err)
+	}
+	code, err := totp.GenerateCodeCustom(enrollment.Secret, fixedNow, totp.ValidateOpts{
+		Period:    30,
+		Skew:      1,
+		Digits:    otp.DigitsSix,
+		Algorithm: otp.AlgorithmSHA1,
+	})
+	if err != nil {
+		t.Fatalf("GenerateCodeCustom() error = %v", err)
+	}
+	token, user, err := authService.CreateInitialUser(context.Background(), "admin@example.com", "super-secure-password", "super-secure-password", enrollment.Secret, code, "127.0.0.1", "test-agent")
+	if err != nil {
+		t.Fatalf("CreateInitialUser() error = %v", err)
+	}
+
+	projectService := projects.New(config.Config{
+		HTTPAddr:      ":8080",
+		PublicBaseURL: "http://localhost:8080",
+		DataDir:       t.TempDir(),
+		CaddyAdminURL: "http://shared-caddy:2019",
+	}, stateStore, nil, nil, nil, newNoopLogger())
+	srv := New(config.Config{
+		HTTPAddr:      ":8080",
+		PublicBaseURL: "http://localhost:8080",
+		DataDir:       t.TempDir(),
+		CaddyAdminURL: "http://shared-caddy:2019",
+	}, webUI, newNoopLogger(), version.Info{Version: "v1.0.0"}, stateStore, authService, projectService, nil, nil)
+	srv.controllerUpdateStatusFunc = func(context.Context) ui.ControllerUpdateData {
+		return ui.ControllerUpdateData{
+			Checked:         true,
+			UpdateAvailable: true,
+			CanTrigger:      true,
+			TargetImage:     "ghcr.io/knopkem/caddytower:v1.1.0",
+			LatestRelease:   "v1.1.0",
+		}
+	}
+
+	var scheduledImage string
+	var scheduledUser string
+	srv.scheduleControllerUpdateFunc = func(image, userID string) {
+		scheduledImage = image
+		scheduledUser = userID
+	}
+
+	getReq := httptest.NewRequest(http.MethodGet, "/settings", nil)
+	getReq.AddCookie(&http.Cookie{Name: authService.SessionCookieName(), Value: token})
+	getRec := httptest.NewRecorder()
+	srv.Router().ServeHTTP(getRec, getReq)
+	if getRec.Code != http.StatusOK {
+		t.Fatalf("settings page status = %d, want %d", getRec.Code, http.StatusOK)
+	}
+
+	var csrfCookie *http.Cookie
+	for _, cookie := range getRec.Result().Cookies() {
+		if cookie.Name != authService.SessionCookieName() {
+			csrfCookie = cookie
+			break
+		}
+	}
+	if csrfCookie == nil {
+		t.Fatal("missing csrf cookie")
+	}
+
+	postReq := httptest.NewRequest(http.MethodPost, "/settings/update", strings.NewReader("csrf_token="+csrfCookie.Value))
+	postReq.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	postReq.AddCookie(&http.Cookie{Name: authService.SessionCookieName(), Value: token})
+	postReq.AddCookie(csrfCookie)
+	postRec := httptest.NewRecorder()
+
+	srv.Router().ServeHTTP(postRec, postReq)
+
+	if postRec.Code != http.StatusFound {
+		t.Fatalf("status = %d, want %d", postRec.Code, http.StatusFound)
+	}
+	if scheduledImage != "ghcr.io/knopkem/caddytower:v1.1.0" || scheduledUser != user.ID {
+		t.Fatalf("scheduled update = %q %q", scheduledImage, scheduledUser)
+	}
+}
+
 func TestSettingsGitHubSubmitEnablesRuntimeInstallFlow(t *testing.T) {
 	t.Parallel()
 

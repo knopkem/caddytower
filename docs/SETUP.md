@@ -179,6 +179,17 @@ update DNS records automatically through Cloudflare.
 If you leave them empty, CaddyTower still works. Just create the admin hostname
 and app subdomain records yourself with your DNS provider.
 
+### Controller updates
+
+The same **Settings** page also shows the running controller version, the latest
+tagged GitHub release, and an **Update and restart** action when a newer release
+is available.
+
+For installs that track a moving tag such as `latest`, Settings instead offers a
+manual pull of that current channel. In both cases, CaddyTower starts a short-
+lived helper container that replaces the running controller cleanly, so you do
+not need to SSH in and restart it by hand for normal upgrades.
+
 ## 8. GitHub App setup for Import from GitHub
 
 This is optional. Skip it if you only want manual image deploys.

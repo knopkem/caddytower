@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"flag"
 	"log/slog"
 	"net/http"
 	"os"
@@ -27,6 +28,10 @@ import (
 
 func main() {
 	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{}))
+	if len(os.Args) > 1 && os.Args[1] == "self-update" {
+		runSelfUpdate(logger, os.Args[2:])
+		return
+	}
 
 	cfg, err := config.Load()
 	if err != nil {
@@ -126,6 +131,32 @@ func main() {
 
 	if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		logger.Error("serve http", "error", err)
+		os.Exit(1)
+	}
+}
+
+func runSelfUpdate(logger *slog.Logger, args []string) {
+	flags := flag.NewFlagSet("self-update", flag.ExitOnError)
+	containerName := flags.String("container-name", "caddytower", "container to replace")
+	targetImage := flags.String("target-image", "", "image ref to deploy")
+	_ = flags.Parse(args)
+
+	if *targetImage == "" {
+		logger.Error("missing target image")
+		os.Exit(1)
+	}
+
+	dockerService, err := dockerx.NewFromEnv(config.Config{})
+	if err != nil {
+		logger.Error("create docker service", "error", err)
+		os.Exit(1)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+
+	if err := projects.SelfUpdateController(ctx, dockerService, *containerName, *targetImage); err != nil {
+		logger.Error("self update controller", "error", err, "container", *containerName, "target_image", *targetImage)
 		os.Exit(1)
 	}
 }

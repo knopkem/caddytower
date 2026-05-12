@@ -92,7 +92,11 @@ After login, the dashboard walks you through four steps:
 3. **GitHub** — when you want repo imports, follow the GitHub setup guide in
    Settings after the public admin hostname is reachable, then connect the
    GitHub App.
-4. **Deploy** — either:
+4. **Controller updates** — Settings checks the latest tagged release and lets
+   you trigger an on-demand controller refresh or release update with one click.
+   CaddyTower pulls the target image and replaces its own container
+   automatically.
+5. **Deploy** — either:
    - **Import from GitHub** → pick a repo. CaddyTower detects the root
      `Dockerfile`, the first `EXPOSE` port, and an existing image-publishing
      workflow. If no workflow exists, it can open a PR that adds
