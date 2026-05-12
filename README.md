@@ -32,12 +32,16 @@ You need a VPS with **Docker (with the Compose plugin)**. Nothing else.
 # 1. Pull the repo onto the VPS (or just the deploy/ + scripts/ directories).
 git clone https://github.com/knopkem/caddytower /opt/caddytower-src
 cd /opt/caddytower-src
+```
 
+```bash
 # 2. Run the bootstrap script. It checks Docker, creates the `edge` network,
 #    copies the compose + Caddy files, generates a master key, and starts
 #    shared-caddy + watchtower if they are not already present.
 ./scripts/bootstrap-caddytower.sh /opt/caddytower
+```
 
+```bash
 # 3. The first run stops after writing /opt/caddytower/caddytower.env so you
 #    can fill in CADDYTOWER_IMAGE, CADDYTOWER_PUBLIC_BASE_URL, and
 #    CADDYTOWER_ROOT_DOMAIN. Edit it, then run the script again.
@@ -49,6 +53,8 @@ an SSH tunnel:
 
 ```bash
 ssh -L 8080:127.0.0.1:8080 ubuntu@your-vps
+```
+```bash
 open http://127.0.0.1:8080/setup
 ```
 
