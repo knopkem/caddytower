@@ -1,0 +1,52 @@
+{{define "home.gohtml"}}{{template "layout" .}}{{end}}
+
+{{define "content"}}
+<section class="grid">
+  <article class="card">
+    <h2>What exists now</h2>
+    <ul>
+      <li>Embedded templates and static assets</li>
+      <li>Health and version endpoints</li>
+      <li>Security headers middleware</li>
+      <li>Distroless-ready Docker image</li>
+      <li>GitHub Actions pipeline for test/build/push</li>
+    </ul>
+  </article>
+
+  <article class="card">
+    <h2>Next implementation slices</h2>
+    <ol>
+      <li>SQLite schema and migrations</li>
+      <li>Secret encryption with a master key</li>
+      <li>Auth, sessions, TOTP, and audit logging</li>
+      <li>Docker, Caddy, and Cloudflare service layers</li>
+    </ol>
+  </article>
+</section>
+
+<section class="grid">
+  <article class="card">
+    <h2>Runtime config</h2>
+    <dl class="kv">
+      <div><dt>HTTP address</dt><dd>{{.Config.HTTPAddr}}</dd></div>
+      <div><dt>Public base URL</dt><dd>{{.Config.PublicBaseURL}}</dd></div>
+      <div><dt>Data dir</dt><dd>{{.Config.DataDir}}</dd></div>
+      <div><dt>State DB</dt><dd>{{.Config.StateDBPath}}</dd></div>
+      <div><dt>Caddy admin</dt><dd>{{.Config.CaddyAdminURL}}</dd></div>
+      <div><dt>Root domain</dt><dd>{{if .Config.RootDomain}}{{.Config.RootDomain}}{{else}}not set{{end}}</dd></div>
+      <div><dt>Docker host</dt><dd>{{if .Config.DockerHost}}{{.Config.DockerHost}}{{else}}docker default{{end}}</dd></div>
+      <div><dt>Master key</dt><dd>{{if .Config.MasterKeySet}}configured{{else}}not set yet{{end}}</dd></div>
+    </dl>
+  </article>
+
+  <article class="card">
+    <h2>Build info</h2>
+    <dl class="kv">
+      <div><dt>Version</dt><dd>{{.Version.Version}}</dd></div>
+      <div><dt>Commit</dt><dd>{{.Version.Commit}}</dd></div>
+      <div><dt>Date</dt><dd>{{.Version.Date}}</dd></div>
+      <div><dt>Rendered</dt><dd>{{.GeneratedAt.Format "2006-01-02 15:04:05 MST"}}</dd></div>
+    </dl>
+  </article>
+</section>
+{{end}}
