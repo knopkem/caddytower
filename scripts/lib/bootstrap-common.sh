@@ -265,6 +265,53 @@ caddytower_service_container_exists() {
   '
 }
 
+caddytower_ensure_watchtower_api_version() {
+  local compose_file="${1:-}"
+  local tmp_file=""
+
+  [[ -n "${compose_file}" ]] || caddytower_die "internal error: missing compose file path"
+  [[ -f "${compose_file}" ]] || return 0
+
+  if ! grep -q '^  watchtower:$' "${compose_file}"; then
+    return 0
+  fi
+  if grep -q 'DOCKER_API_VERSION:' "${compose_file}"; then
+    return 0
+  fi
+
+  tmp_file="$(mktemp)"
+  awk '
+    BEGIN {
+      in_watchtower = 0
+      inserted = 0
+    }
+    /^  watchtower:$/ {
+      in_watchtower = 1
+    }
+    in_watchtower && /^    networks:$/ && !inserted {
+      print "    environment:"
+      print "      DOCKER_API_VERSION: \"1.44\""
+      inserted = 1
+    }
+    /^  [^ ]/ && $0 != "  watchtower:" && in_watchtower {
+      in_watchtower = 0
+    }
+    {
+      print
+    }
+    END {
+      if (!inserted) {
+        exit 1
+      }
+    }
+  ' "${compose_file}" > "${tmp_file}" || {
+    rm -f "${tmp_file}"
+    caddytower_die "failed to patch watchtower API compatibility in ${compose_file}"
+  }
+  mv "${tmp_file}" "${compose_file}"
+  caddytower_log "Patched ${compose_file} with DOCKER_API_VERSION for Watchtower compatibility"
+}
+
 caddytower_configure_github_pem_mount() {
   local compose_file="${1:-}"
   local host_path="${2:-}"

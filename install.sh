@@ -423,6 +423,7 @@ caddytower_ensure_edge_network
 download_asset "deploy/docker-compose.caddytower.yml" "${COMPOSE_DEST}"
 download_asset "deploy/caddytower.env.example" "${ENV_DEST}"
 download_asset "deploy/Caddyfile" "${CADDYFILE_DEST}"
+caddytower_ensure_watchtower_api_version "${COMPOSE_DEST}"
 
 caddytower_set_env_value "${ENV_DEST}" "CADDYTOWER_IMAGE" "${IMAGE_REF}"
 caddytower_set_env_value "${ENV_DEST}" "CADDYTOWER_PUBLIC_BASE_URL" "${PUBLIC_BASE_URL}"
