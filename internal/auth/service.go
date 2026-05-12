@@ -352,17 +352,43 @@ func (s *Service) ValidateCSRF(r *http.Request) bool {
 }
 
 func ClientIP(r *http.Request) string {
-	if forwarded := strings.TrimSpace(r.Header.Get("X-Forwarded-For")); forwarded != "" {
-		parts := strings.Split(forwarded, ",")
-		return strings.TrimSpace(parts[0])
+	remoteHost := remoteAddrHost(r.RemoteAddr)
+	if isTrustedProxyIP(remoteHost) {
+		if forwarded := firstForwardedIP(r.Header.Get("X-Forwarded-For")); forwarded != "" {
+			return forwarded
+		}
+		if realIP := strings.TrimSpace(r.Header.Get("X-Real-IP")); realIP != "" {
+			return realIP
+		}
 	}
+	return remoteHost
+}
 
-	host, _, err := net.SplitHostPort(strings.TrimSpace(r.RemoteAddr))
+func remoteAddrHost(remoteAddr string) string {
+	remoteAddr = strings.TrimSpace(remoteAddr)
+	host, _, err := net.SplitHostPort(remoteAddr)
 	if err == nil {
 		return host
 	}
+	return strings.Trim(remoteAddr, "[]")
+}
 
-	return strings.TrimSpace(r.RemoteAddr)
+func isTrustedProxyIP(host string) bool {
+	ip := net.ParseIP(strings.TrimSpace(host))
+	if ip == nil {
+		return false
+	}
+	return ip.IsLoopback() || ip.IsPrivate()
+}
+
+func firstForwardedIP(header string) string {
+	for _, part := range strings.Split(header, ",") {
+		candidate := strings.TrimSpace(part)
+		if net.ParseIP(candidate) != nil {
+			return candidate
+		}
+	}
+	return ""
 }
 
 func (s *Service) createSession(ctx context.Context, userID, ip, userAgent string) (string, error) {

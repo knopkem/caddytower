@@ -62,7 +62,6 @@ func New(cfg config.Config, webUI *ui.UI, logger *slog.Logger, build version.Inf
 func (s *Server) Router() http.Handler {
 	router := chi.NewRouter()
 	router.Use(chimiddleware.RequestID)
-	router.Use(chimiddleware.RealIP)
 	router.Use(chimiddleware.Recoverer)
 	router.Use(s.requestLogger)
 	router.Use(securityHeaders)

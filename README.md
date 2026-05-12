@@ -60,13 +60,31 @@ Then open <http://127.0.0.1:8080/setup>.
 | `CADDYTOWER_CADDY_ADMIN_URL` | `http://shared-caddy:2019` | Caddy Admin API base URL |
 | `CADDYTOWER_ROOT_DOMAIN` | _(empty)_ | Root domain managed by the controller |
 | `DOCKER_HOST` | _(docker default)_ | Docker daemon address |
-| `CADDYTOWER_MASTER_KEY` | _(empty)_ | Base64-encoded 32-byte AES-GCM key for encrypted secrets |
+| `CADDYTOWER_MASTER_KEY` | _(empty)_ | Base64-encoded 32-byte AES-GCM key for encrypted secrets; required for non-local public URLs |
 | `CADDYTOWER_BACKUPS_ENABLED` | `false` | Enable scheduled and manual backups |
 | `CADDYTOWER_BACKUPS_RETENTION_DAYS` | `14` | Days of backup archives to keep |
 | `CADDYTOWER_BACKUPS_SCHEDULE_UTC` | `02:30` | Daily backup time in UTC (`HH:MM`) |
 | `CADDYTOWER_BACKUPS_INCLUDE_ENGINE_DUMPS` | `true` | Include shared Postgres/MariaDB dumps in archives |
 
 The container image overrides `CADDYTOWER_DATA_DIR` to `/data`.
+
+For production exposure, `CADDYTOWER_PUBLIC_BASE_URL` must use HTTPS and
+`CADDYTOWER_MASTER_KEY` must be set so project environment values, database
+credentials, Cloudflare tokens, and TOTP secrets are encrypted at rest.
+
+## Security notes
+
+- Keep the controller bound to localhost or reachable only through Caddy; never
+  publish the container port directly to the internet.
+- The Docker socket mount gives CaddyTower administrative control over Docker on
+  the host. Only run this controller for trusted administrators.
+- CaddyTower only trusts `X-Forwarded-For`/`X-Real-IP` when the immediate peer is
+  a loopback or private-network proxy, which prevents direct clients from
+  spoofing login and webhook rate-limit identities.
+- Webhook requests must include `X-Signature: sha256=<hex HMAC>` over the raw
+  body using the per-project webhook secret.
+- Backups are disabled by default because archives can grow quickly when shared
+  database dumps are included.
 
 ## Backups
 
@@ -86,9 +104,9 @@ The container image overrides `CADDYTOWER_DATA_DIR` to `/data`.
 Use this sequence to move the live VPS from the handwritten shared Caddy setup to CaddyTower-managed routes without dropping existing subdomains.
 
 1. **Prepare the controller**
-   - Build/push the current image to GHCR.
-   - Copy `deploy/docker-compose.caddytower.yml`, `deploy/caddytower.env.example`, and `scripts/bootstrap-caddytower.sh` to the VPS.
-   - Set `CADDYTOWER_IMAGE`, `CADDYTOWER_PUBLIC_BASE_URL`, and `CADDYTOWER_ROOT_DOMAIN` in `caddytower.env`.
+    - Build/push the current image to GHCR.
+    - Copy `deploy/docker-compose.caddytower.yml`, `deploy/caddytower.env.example`, and `scripts/bootstrap-caddytower.sh` to the VPS.
+    - Set `CADDYTOWER_IMAGE`, HTTPS `CADDYTOWER_PUBLIC_BASE_URL`, and `CADDYTOWER_ROOT_DOMAIN` in `caddytower.env`.
 
 2. **Boot CaddyTower beside the current stack**
    - Run `./scripts/bootstrap-caddytower.sh /opt/caddytower`.

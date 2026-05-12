@@ -55,6 +55,38 @@ func TestRouterServesHome(t *testing.T) {
 	}
 }
 
+func TestSecurityHeadersForPublicAdminPages(t *testing.T) {
+	t.Parallel()
+
+	webUI, err := ui.New()
+	if err != nil {
+		t.Fatalf("ui.New() error = %v", err)
+	}
+
+	srv := New(config.Config{
+		HTTPAddr:      ":8080",
+		PublicBaseURL: "https://admin.example.com",
+		DataDir:       "/tmp/caddytower",
+		CaddyAdminURL: "http://shared-caddy:2019",
+	}, webUI, newNoopLogger(), version.Info{Version: "test"}, nil, nil, nil, nil)
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Set("X-Forwarded-Proto", "https")
+	rec := httptest.NewRecorder()
+
+	srv.Router().ServeHTTP(rec, req)
+
+	if got := rec.Header().Get("Cache-Control"); got != "no-store" {
+		t.Fatalf("Cache-Control = %q, want no-store", got)
+	}
+	if got := rec.Header().Get("Strict-Transport-Security"); got == "" {
+		t.Fatal("missing Strict-Transport-Security")
+	}
+	if got := rec.Header().Get("Content-Security-Policy"); !strings.Contains(got, "default-src 'self'") {
+		t.Fatalf("Content-Security-Policy = %q", got)
+	}
+}
+
 func TestRootRedirectsToSetupWhenBootstrapRequired(t *testing.T) {
 	t.Parallel()
 

@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"net"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -60,6 +61,9 @@ func LoadFromLookup(lookup func(string) (string, bool)) (Config, error) {
 	}
 
 	if err := validateURL("CADDYTOWER_PUBLIC_BASE_URL", cfg.PublicBaseURL); err != nil {
+		return Config{}, err
+	}
+	if err := validatePublicExposure(cfg.PublicBaseURL, cfg.MasterKey); err != nil {
 		return Config{}, err
 	}
 
@@ -143,6 +147,38 @@ func validateURL(name, raw string) error {
 	}
 
 	return nil
+}
+
+func validatePublicExposure(publicBaseURL, masterKey string) error {
+	parsed, err := url.Parse(publicBaseURL)
+	if err != nil {
+		return fmt.Errorf("CADDYTOWER_PUBLIC_BASE_URL is invalid: %w", err)
+	}
+
+	if isLocalHost(parsed.Hostname()) {
+		return nil
+	}
+
+	// Non-local deployments are expected to be exposed through Caddy. Refusing
+	// public HTTP prevents insecure cookies and accidental credential leakage.
+	if parsed.Scheme != "https" {
+		return fmt.Errorf("CADDYTOWER_PUBLIC_BASE_URL must use https for non-local hosts")
+	}
+
+	if strings.TrimSpace(masterKey) == "" {
+		return fmt.Errorf("CADDYTOWER_MASTER_KEY is required for non-local public URLs")
+	}
+
+	return nil
+}
+
+func isLocalHost(host string) bool {
+	normalized := strings.Trim(strings.ToLower(host), "[]")
+	if normalized == "localhost" {
+		return true
+	}
+	parsed := net.ParseIP(normalized)
+	return parsed != nil && parsed.IsLoopback()
 }
 
 func validateClock(name, raw string) error {

@@ -2,6 +2,7 @@ package auth
 
 import (
 	"context"
+	"net/http/httptest"
 	"testing"
 	"time"
 
@@ -116,6 +117,23 @@ func TestLoginLocksAccountAfterRepeatedFailures(t *testing.T) {
 
 	if _, _, err := svc.Login(ctx, "admin@example.com", "wrong-password", code, "127.0.0.1", "test-agent"); err != ErrAccountLocked {
 		t.Fatalf("expected ErrAccountLocked, got %v", err)
+	}
+}
+
+func TestClientIPTrustsForwardedHeadersOnlyFromPrivateProxy(t *testing.T) {
+	t.Parallel()
+
+	req := httptest.NewRequest("GET", "/", nil)
+	req.RemoteAddr = "203.0.113.10:43122"
+	req.Header.Set("X-Forwarded-For", "198.51.100.1")
+	if got := ClientIP(req); got != "203.0.113.10" {
+		t.Fatalf("ClientIP() = %q, want direct remote address", got)
+	}
+
+	req.RemoteAddr = "172.18.0.2:43122"
+	req.Header.Set("X-Forwarded-For", "198.51.100.1, 172.18.0.2")
+	if got := ClientIP(req); got != "198.51.100.1" {
+		t.Fatalf("ClientIP() = %q, want forwarded client address", got)
 	}
 }
 

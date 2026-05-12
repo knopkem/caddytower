@@ -55,6 +55,59 @@ func TestLoadFromLookupRejectsInvalidURL(t *testing.T) {
 	}
 }
 
+func TestLoadFromLookupRejectsNonLocalHTTPPublicURL(t *testing.T) {
+	t.Parallel()
+
+	_, err := LoadFromLookup(func(key string) (string, bool) {
+		switch key {
+		case "CADDYTOWER_PUBLIC_BASE_URL":
+			return "http://admin.example.com", true
+		case "CADDYTOWER_MASTER_KEY":
+			return "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa=", true
+		default:
+			return "", false
+		}
+	})
+	if err == nil {
+		t.Fatal("expected error for non-local http public url")
+	}
+}
+
+func TestLoadFromLookupRejectsNonLocalPublicURLWithoutMasterKey(t *testing.T) {
+	t.Parallel()
+
+	_, err := LoadFromLookup(func(key string) (string, bool) {
+		if key == "CADDYTOWER_PUBLIC_BASE_URL" {
+			return "https://admin.example.com", true
+		}
+		return "", false
+	})
+	if err == nil {
+		t.Fatal("expected error for missing master key")
+	}
+}
+
+func TestLoadFromLookupAcceptsSecureNonLocalPublicURL(t *testing.T) {
+	t.Parallel()
+
+	cfg, err := LoadFromLookup(func(key string) (string, bool) {
+		switch key {
+		case "CADDYTOWER_PUBLIC_BASE_URL":
+			return "https://admin.example.com", true
+		case "CADDYTOWER_MASTER_KEY":
+			return "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa=", true
+		default:
+			return "", false
+		}
+	})
+	if err != nil {
+		t.Fatalf("LoadFromLookup() error = %v", err)
+	}
+	if cfg.PublicBaseURL != "https://admin.example.com" {
+		t.Fatalf("PublicBaseURL = %q", cfg.PublicBaseURL)
+	}
+}
+
 func TestLoadFromLookupParsesBackupSettings(t *testing.T) {
 	t.Parallel()
 

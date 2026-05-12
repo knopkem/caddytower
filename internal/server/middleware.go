@@ -3,6 +3,7 @@ package server
 import (
 	"log/slog"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 )
@@ -28,8 +29,11 @@ func securityHeaders(next http.Handler) http.Handler {
 		headers.Set("X-Frame-Options", "DENY")
 		headers.Set("Content-Security-Policy", "default-src 'self'; style-src 'self'; img-src 'self' data:; script-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'")
 		headers.Set("Permissions-Policy", "accelerometer=(), camera=(), geolocation=(), microphone=()")
+		if !strings.HasPrefix(r.URL.Path, "/assets/") {
+			headers.Set("Cache-Control", "no-store")
+		}
 
-		if r.TLS != nil {
+		if r.TLS != nil || r.Header.Get("X-Forwarded-Proto") == "https" {
 			headers.Set("Strict-Transport-Security", "max-age=31536000; includeSubDomains; preload")
 		}
 

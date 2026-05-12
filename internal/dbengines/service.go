@@ -37,7 +37,10 @@ const (
 	managedNetworkName = "edge"
 )
 
-var identifierSanitizer = regexp.MustCompile(`[^a-z0-9_]+`)
+var (
+	identifierSanitizer = regexp.MustCompile(`[^a-z0-9_]+`)
+	envVarNamePattern   = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]{0,127}$`)
+)
 
 type dockerService interface {
 	InspectContainer(context.Context, string) (dockerx.ContainerInspect, error)
@@ -79,6 +82,9 @@ func (s *Service) AttachDatabase(ctx context.Context, projectID, slug, engine, e
 	}
 	if engine != enginePostgres && engine != engineMariaDB {
 		return Attachment{}, fmt.Errorf("unsupported engine %q", engine)
+	}
+	if !envVarNamePattern.MatchString(envVarName) {
+		return Attachment{}, fmt.Errorf("database connection env var must match [A-Za-z_][A-Za-z0-9_]*")
 	}
 
 	if _, err := s.ensureEngine(ctx, engine); err != nil {
