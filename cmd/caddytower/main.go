@@ -10,6 +10,7 @@ import (
 	"syscall"
 	"time"
 
+	"caddytower/internal/auth"
 	"caddytower/internal/config"
 	"caddytower/internal/secrets"
 	"caddytower/internal/server"
@@ -33,7 +34,8 @@ func main() {
 		os.Exit(1)
 	}
 
-	if _, err := secrets.NewOptionalFromBase64(cfg.MasterKey); err != nil {
+	secretService, err := secrets.NewOptionalFromBase64(cfg.MasterKey)
+	if err != nil {
 		logger.Error("load master key", "error", err)
 		os.Exit(1)
 	}
@@ -49,7 +51,9 @@ func main() {
 		}
 	}()
 
-	app := server.New(cfg, webUI, logger, version.Current(), stateStore)
+	authService := auth.New(stateStore, secretService, cfg.PublicBaseURL)
+
+	app := server.New(cfg, webUI, logger, version.Current(), stateStore, authService)
 
 	srv := &http.Server{
 		Addr:              cfg.HTTPAddr,

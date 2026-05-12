@@ -1,0 +1,49 @@
+{{define "login.gohtml"}}
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>{{if .PageTitle}}{{.PageTitle}}{{else}}CaddyTower{{end}}</title>
+    <meta name="color-scheme" content="dark light">
+    <link rel="stylesheet" href="/assets/app.css">
+  </head>
+  <body>
+    <main class="shell">
+      <header class="hero">
+        <div>
+          <p class="eyebrow">CaddyTower</p>
+          <h1>{{if .Headline}}{{.Headline}}{{else}}Lightweight VPS control plane{{end}}</h1>
+          <p class="lede">
+            A small Go service for managing Caddy routes, Dockerized projects,
+            and Cloudflare DNS on a single VPS.
+          </p>
+        </div>
+      </header>
+<section class="grid single">
+  <article class="card">
+    <h2>Sign in</h2>
+    <p class="muted">Use your email, password, and 6-digit authenticator code.</p>
+    {{if .ErrorMessage}}<p class="alert">{{.ErrorMessage}}</p>{{end}}
+    <form method="post" action="/login" class="stack">
+      <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+      <label class="field">
+        <span>Email</span>
+        <input type="email" name="email" value="{{.Email}}" autocomplete="username" required>
+      </label>
+      <label class="field">
+        <span>Password</span>
+        <input type="password" name="password" autocomplete="current-password" required>
+      </label>
+      <label class="field">
+        <span>TOTP code</span>
+        <input type="text" name="code" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" maxlength="6" required>
+      </label>
+      <button type="submit">Sign in</button>
+    </form>
+  </article>
+</section>
+    </main>
+  </body>
+</html>
+{{end}}

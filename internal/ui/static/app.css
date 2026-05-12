@@ -85,6 +85,10 @@ h1 {
   line-height: 1.7;
 }
 
+.single {
+  grid-template-columns: minmax(320px, 560px);
+}
+
 .kv {
   display: grid;
   gap: 12px;
@@ -109,9 +113,64 @@ h1 {
     monospace;
 }
 
+.muted {
+  color: var(--muted);
+}
+
+.stack {
+  display: grid;
+  gap: 14px;
+}
+
+.field {
+  display: grid;
+  gap: 6px;
+}
+
+.field span {
+  color: var(--muted);
+  font-size: 0.95rem;
+}
+
+.field input {
+  width: 100%;
+  padding: 12px 14px;
+  border: 1px solid var(--panel-border);
+  border-radius: 12px;
+  background: rgba(11, 16, 32, 0.8);
+  color: var(--text);
+}
+
+button {
+  width: fit-content;
+  padding: 11px 16px;
+  border: 0;
+  border-radius: 12px;
+  background: var(--accent);
+  color: #081120;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+button.secondary {
+  background: #31415f;
+  color: var(--text);
+}
+
+.inline-form {
+  margin-top: 14px;
+}
+
+.alert {
+  padding: 12px 14px;
+  border: 1px solid #704040;
+  border-radius: 12px;
+  background: rgba(112, 64, 64, 0.2);
+  color: #ffd0d0;
+}
+
 @media (max-width: 640px) {
   .shell {
     padding-top: 32px;
   }
 }
-

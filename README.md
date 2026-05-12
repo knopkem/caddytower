@@ -5,9 +5,10 @@ Caddy, Cloudflare DNS, and image-only deployments from GHCR.
 
 This repository currently contains the initial scaffold:
 
-- Go 1.22 app with a small chi-based HTTP server
+- Go 1.25 app with a small chi-based HTTP server
 - Embedded HTML templates and static assets
 - Health and version endpoints
+- First-user bootstrap, password login, TOTP, sessions, and CSRF protection
 - Multi-stage distroless Docker image
 - GitHub Actions workflow for test/build/push to GHCR
 
@@ -36,6 +37,8 @@ The container image overrides `CADDYTOWER_DATA_DIR` to `/data`.
 ## Endpoints
 
 - `/` — scaffold landing page
+- `/setup` — first-admin bootstrap
+- `/login` — password + TOTP login
 - `/healthz` — liveness probe
 - `/readyz` — readiness probe
 - `/-/version` — build metadata as JSON

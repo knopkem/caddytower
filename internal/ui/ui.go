@@ -34,8 +34,28 @@ type HomePageData struct {
 	GeneratedAt time.Time
 	PageTitle   string
 	Headline    string
+	CSRFToken   string
 	Version     version.Info
 	Config      ConfigSummary
+	CurrentUser string
+}
+
+type SetupPageData struct {
+	PageTitle    string
+	Headline     string
+	CSRFToken    string
+	Email        string
+	ManualKey    string
+	OTPAuthURL   string
+	ErrorMessage string
+}
+
+type LoginPageData struct {
+	PageTitle    string
+	Headline     string
+	CSRFToken    string
+	Email        string
+	ErrorMessage string
 }
 
 func New() (*UI, error) {
