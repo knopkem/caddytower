@@ -114,13 +114,14 @@ type BackupItem struct {
 }
 
 type SetupPageData struct {
-	PageTitle    string
-	Headline     string
-	CSRFToken    string
-	Email        string
-	ManualKey    string
-	OTPAuthURL   string
-	ErrorMessage string
+	PageTitle     string
+	Headline      string
+	CSRFToken     string
+	Email         string
+	ManualKey     string
+	OTPAuthURL    string
+	QRCodeDataURL template.URL
+	ErrorMessage  string
 }
 
 type LoginPageData struct {

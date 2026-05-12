@@ -2,12 +2,16 @@ package server
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"crypto/hmac"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"html/template"
+	"image/png"
 	"io"
 	"log/slog"
 	"net/http"
@@ -27,6 +31,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	chimiddleware "github.com/go-chi/chi/v5/middleware"
+	"github.com/pquerna/otp"
 )
 
 type Server struct {
@@ -296,10 +301,37 @@ func (s *Server) handleSetupSubmit(w http.ResponseWriter, r *http.Request) {
 func (s *Server) renderSetup(w http.ResponseWriter, r *http.Request, data ui.SetupPageData) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	data.CSRFToken = s.auth.EnsureCSRFCookie(w, r)
+	if data.QRCodeDataURL == "" && strings.TrimSpace(data.OTPAuthURL) != "" {
+		qrCodeDataURL, err := buildTOTPQRCodeDataURL(data.OTPAuthURL)
+		if err != nil {
+			s.logger.Error("build setup qr code", "error", err)
+		} else {
+			data.QRCodeDataURL = template.URL(qrCodeDataURL)
+		}
+	}
 	if err := s.ui.Render(w, "setup.gohtml", data); err != nil {
 		s.logger.Error("render setup", "error", err)
 		http.Error(w, "failed to render page", http.StatusInternalServerError)
 	}
+}
+
+func buildTOTPQRCodeDataURL(otpAuthURL string) (string, error) {
+	key, err := otp.NewKeyFromURL(strings.TrimSpace(otpAuthURL))
+	if err != nil {
+		return "", fmt.Errorf("parse otpauth url: %w", err)
+	}
+
+	image, err := key.Image(240, 240)
+	if err != nil {
+		return "", fmt.Errorf("render qr image: %w", err)
+	}
+
+	var encoded bytes.Buffer
+	if err := png.Encode(&encoded, image); err != nil {
+		return "", fmt.Errorf("encode qr image: %w", err)
+	}
+
+	return "data:image/png;base64," + base64.StdEncoding.EncodeToString(encoded.Bytes()), nil
 }
 
 func (s *Server) handleLoginForm(w http.ResponseWriter, r *http.Request) {

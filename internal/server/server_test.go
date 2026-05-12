@@ -53,6 +53,12 @@ func TestRouterServesHome(t *testing.T) {
 	if !strings.Contains(rec.Body.String(), "CaddyTower dashboard") {
 		t.Fatalf("body missing scaffold heading: %q", rec.Body.String())
 	}
+	if !strings.Contains(rec.Body.String(), `placeholder="example.com"`) || !strings.Contains(rec.Body.String(), `placeholder="server.example.com or 203.0.113.10"`) {
+		t.Fatalf("body missing generic deployment placeholders: %q", rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "How to set this up") {
+		t.Fatalf("body missing dashboard helper copy: %q", rec.Body.String())
+	}
 }
 
 func TestSecurityHeadersForPublicAdminPages(t *testing.T) {
@@ -84,6 +90,40 @@ func TestSecurityHeadersForPublicAdminPages(t *testing.T) {
 	}
 	if got := rec.Header().Get("Content-Security-Policy"); !strings.Contains(got, "default-src 'self'") {
 		t.Fatalf("Content-Security-Policy = %q", got)
+	}
+}
+
+func TestSetupPageIncludesQRCodeAndAuthenticatorGuidance(t *testing.T) {
+	t.Parallel()
+
+	webUI, err := ui.New()
+	if err != nil {
+		t.Fatalf("ui.New() error = %v", err)
+	}
+
+	stateStore := openServerTestStore(t)
+	authService := auth.New(stateStore, nil, "http://localhost:8080")
+	srv := New(config.Config{
+		HTTPAddr:      ":8080",
+		PublicBaseURL: "http://localhost:8080",
+		DataDir:       t.TempDir(),
+		CaddyAdminURL: "http://shared-caddy:2019",
+	}, webUI, newNoopLogger(), version.Info{Version: "test"}, stateStore, authService, nil, nil)
+
+	req := httptest.NewRequest(http.MethodGet, "/setup?email=admin@example.com", nil)
+	rec := httptest.NewRecorder()
+	srv.Router().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+
+	body := rec.Body.String()
+	if !strings.Contains(body, "data:image/png;base64,") {
+		t.Fatalf("setup page missing QR code: %q", body)
+	}
+	if !strings.Contains(body, "Google Authenticator") || !strings.Contains(body, "Bitwarden") {
+		t.Fatalf("setup page missing authenticator guidance: %q", body)
 	}
 }
 

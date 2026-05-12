@@ -50,12 +50,33 @@
 
   <article class="card">
     <h2>Set up TOTP</h2>
-    <p class="muted">Add this account to your authenticator app before submitting the form.</p>
+    <p class="muted">
+      Open any standard authenticator app on your phone and scan this QR code before
+      submitting the form.
+    </p>
+    {{if .QRCodeDataURL}}
+    <div class="qr-block">
+      <img class="qr-image" src="{{.QRCodeDataURL}}" alt="TOTP QR code for CaddyTower setup">
+    </div>
+    {{end}}
+    <p class="muted">
+      Works with apps like 1Password, Bitwarden, Google Authenticator, Microsoft
+      Authenticator, Authy, Aegis, 2FAS, and other TOTP-compatible apps.
+    </p>
     <dl class="kv">
       <div><dt>Issuer</dt><dd>CaddyTower</dd></div>
       <div><dt>Manual secret</dt><dd>{{.ManualKey}}</dd></div>
-      <div><dt>OTPAuth URL</dt><dd>{{.OTPAuthURL}}</dd></div>
     </dl>
+    <details>
+      <summary>Can’t scan? Show advanced setup details</summary>
+      <dl class="kv">
+        <div><dt>OTPAuth URL</dt><dd>{{.OTPAuthURL}}</dd></div>
+      </dl>
+    </details>
+    <p class="muted">
+      If you are setting up from the same device as your authenticator app, use the
+      manual secret instead of scanning.
+    </p>
   </article>
 </section>
     </main>

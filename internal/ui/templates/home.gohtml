@@ -22,7 +22,16 @@
       </header>
       <section class="grid">
         <article class="card">
-          <h2>Admin session</h2>
+          <div class="card-head">
+            <h2>Admin session</h2>
+            <details class="helper">
+              <summary>How this works</summary>
+              <div class="helper-body">
+                <p>This card shows who is signed in and whether the controller already has projects and a root domain configured.</p>
+                <p>After setup, you usually only need this card to confirm that you are working in the right admin session.</p>
+              </div>
+            </details>
+          </div>
           <dl class="kv">
             <div><dt>Signed in as</dt><dd>{{if .CurrentUser}}{{.CurrentUser}}{{else}}anonymous{{end}}</dd></div>
             <div><dt>Configured projects</dt><dd>{{len .Projects}}</dd></div>
@@ -37,7 +46,16 @@
         </article>
 
         <article class="card">
-          <h2>Runtime overview</h2>
+          <div class="card-head">
+            <h2>Runtime overview</h2>
+            <details class="helper">
+              <summary>How this works</summary>
+              <div class="helper-body">
+                <p>These values summarize the deployment settings that affect public web projects.</p>
+                <p>For web apps, configure the root domain, origin hostname, and Cloudflare values in the next panel first.</p>
+              </div>
+            </details>
+          </div>
           <dl class="kv">
             <div><dt>Origin hostname</dt><dd>{{if .Settings.OriginHostname}}{{.Settings.OriginHostname}}{{else}}not configured{{end}}</dd></div>
             <div><dt>Cloudflare zone</dt><dd>{{if .Settings.CloudflareZoneID}}{{.Settings.CloudflareZoneID}}{{else}}not configured{{end}}</dd></div>
@@ -52,16 +70,27 @@
 
       <section class="grid">
         <article class="card">
-          <h2>Deployment settings</h2>
+          <div class="card-head">
+            <h2>Deployment settings</h2>
+            <details class="helper">
+              <summary>How to set this up</summary>
+              <div class="helper-body">
+                <p><strong>Root domain</strong>: the base domain you want CaddyTower to manage, for example <span class="mono">example.com</span>.</p>
+                <p><strong>Origin hostname</strong>: the hostname or public IP that Cloudflare should point at, for example <span class="mono">server.example.com</span> or <span class="mono">203.0.113.10</span>.</p>
+                <p><strong>Cloudflare zone ID</strong> and <strong>API token</strong> are only needed if you want CaddyTower to create DNS records automatically.</p>
+                <p>Enable the Cloudflare proxy only if you want traffic to pass through Cloudflare instead of DNS-only mode.</p>
+              </div>
+            </details>
+          </div>
           <form method="post" action="/settings" class="stack">
             <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
             <label class="field">
               <span>Root domain</span>
-              <input type="text" name="root_domain" value="{{.Settings.RootDomain}}" placeholder="pacsnode.com">
+              <input type="text" name="root_domain" value="{{.Settings.RootDomain}}" placeholder="example.com">
             </label>
             <label class="field">
               <span>Origin hostname</span>
-              <input type="text" name="origin_hostname" value="{{.Settings.OriginHostname}}" placeholder="vps212846.vps.ovh.ca">
+              <input type="text" name="origin_hostname" value="{{.Settings.OriginHostname}}" placeholder="server.example.com or 203.0.113.10">
             </label>
             <label class="field">
               <span>Cloudflare zone ID</span>
@@ -80,7 +109,17 @@
         </article>
 
         <article class="card">
-          <h2>Create project</h2>
+          <div class="card-head">
+            <h2>Create project</h2>
+            <details class="helper">
+              <summary>How to set this up</summary>
+              <div class="helper-body">
+                <p>Use <strong>Web</strong> for apps behind Caddy on a subdomain. Use <strong>TCP</strong> or <strong>UDP</strong> for raw network services with published ports.</p>
+                <p>The image reference should point to a pullable container image such as <span class="mono">ghcr.io/owner/app:latest</span>.</p>
+                <p>For web apps, fill in the subdomain and internal container port. For TCP/UDP services, leave those blank and use published port mappings instead.</p>
+              </div>
+            </details>
+          </div>
           <form method="post" action="/projects" class="stack">
             <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
             <label class="field">
@@ -130,7 +169,16 @@
 
       <section class="card">
         <div class="section-head">
-          <h2>Projects</h2>
+          <div class="card-head">
+            <h2>Projects</h2>
+            <details class="helper">
+              <summary>How to use this panel</summary>
+              <div class="helper-body">
+                <p>This table shows every managed project and its current endpoint, image, and status.</p>
+                <p>Use <strong>Adopt existing containers</strong> once after installing CaddyTower if you already have containers running on the VPS and want to bring them under management without rebuilding them first.</p>
+              </div>
+            </details>
+          </div>
           <p class="muted">Managed web and network projects deployed through Docker, Caddy, and Cloudflare where needed.</p>
           <form method="post" action="/adopt" class="inline-form">
             <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
@@ -193,7 +241,16 @@
 
       <section class="grid">
         <article class="card">
-          <h2>Runtime config</h2>
+          <div class="card-head">
+            <h2>Runtime config</h2>
+            <details class="helper">
+              <summary>What this means</summary>
+              <div class="helper-body">
+                <p>These are controller-level settings from the running CaddyTower process, not per-project settings.</p>
+                <p>Use this card to confirm the public base URL, data directory, Docker socket target, and whether a master key is configured for encrypted secrets.</p>
+              </div>
+            </details>
+          </div>
           <dl class="kv">
             <div><dt>HTTP address</dt><dd>{{.Config.HTTPAddr}}</dd></div>
             <div><dt>Public base URL</dt><dd>{{.Config.PublicBaseURL}}</dd></div>
@@ -207,7 +264,16 @@
         </article>
 
         <article class="card">
-          <h2>Build info</h2>
+          <div class="card-head">
+            <h2>Build info</h2>
+            <details class="helper">
+              <summary>What this means</summary>
+              <div class="helper-body">
+                <p>This card helps you confirm exactly which CaddyTower build is running.</p>
+                <p>The version, commit, and build date are useful when comparing releases or debugging an upgrade.</p>
+              </div>
+            </details>
+          </div>
           <dl class="kv">
             <div><dt>Version</dt><dd>{{.Version.Version}}</dd></div>
             <div><dt>Commit</dt><dd>{{.Version.Commit}}</dd></div>
@@ -219,7 +285,16 @@
 
       <section class="card">
         <div class="section-head">
-          <h2>Backups</h2>
+          <div class="card-head">
+            <h2>Backups</h2>
+            <details class="helper">
+              <summary>How to use this panel</summary>
+              <div class="helper-body">
+                <p>Backups are optional and stay disabled unless you enable them in the controller environment.</p>
+                <p>When enabled, this panel shows the schedule, retention, snapshot list, and a manual run button so you can take a backup before risky changes.</p>
+              </div>
+            </details>
+          </div>
           {{if .BackupsEnabled}}
           <p class="muted">Scheduled at {{.BackupsScheduleUTC}} UTC, retained for {{.BackupsRetentionDays}} days{{if .BackupsIncludeEngineDumps}}, with shared engine dumps included{{else}}, without shared engine dumps{{end}}.</p>
           <form method="post" action="/backups/run" class="inline-form">

@@ -77,6 +77,18 @@ h1 {
   box-shadow: 0 16px 32px var(--shadow);
 }
 
+.card-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+
+.card-head h2 {
+  margin-bottom: 0;
+}
+
 .subcard {
   padding: 16px;
   border: 1px solid var(--panel-border);
@@ -275,10 +287,56 @@ th {
   word-break: break-word;
 }
 
-details summary {
+.qr-block {
+  display: inline-flex;
+  padding: 12px;
+  margin-bottom: 16px;
+  border: 1px solid var(--panel-border);
+  border-radius: 14px;
+  background: #ffffff;
+}
+
+.qr-image {
+  display: block;
+  width: min(240px, 100%);
+  height: auto;
+  border-radius: 8px;
+}
+
+.helper {
+  min-width: fit-content;
+}
+
+.helper summary {
+  display: inline-block;
+  padding: 8px 12px;
+  border: 1px solid var(--panel-border);
+  border-radius: 999px;
+  background: rgba(11, 16, 32, 0.7);
   cursor: pointer;
   color: var(--muted);
-  margin-bottom: 10px;
+  font-size: 0.92rem;
+  list-style: none;
+}
+
+.helper summary::-webkit-details-marker {
+  display: none;
+}
+
+.helper[open] summary {
+  margin-bottom: 12px;
+}
+
+.helper-body {
+  max-width: 52ch;
+  padding: 14px;
+  border: 1px solid var(--panel-border);
+  border-radius: 14px;
+  background: rgba(11, 16, 32, 0.55);
+}
+
+.helper-body p:last-child {
+  margin-bottom: 0;
 }
 
 .log-output {
@@ -301,5 +359,10 @@ details summary {
 @media (max-width: 640px) {
   .shell {
     padding-top: 32px;
+  }
+
+  .card-head {
+    flex-direction: column;
+    align-items: stretch;
   }
 }

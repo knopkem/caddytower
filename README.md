@@ -50,6 +50,11 @@ ssh -L 8080:127.0.0.1:8080 ubuntu@your-vps
 
 Then open <http://127.0.0.1:8080/setup>.
 
+The setup page shows a scannable QR code plus the manual secret. Any standard
+TOTP authenticator app that supports `otpauth://` enrollment works, including
+1Password, Bitwarden, Google Authenticator, Microsoft Authenticator, Authy,
+Aegis, 2FAS, and similar apps.
+
 ## Environment
 
 | Variable | Default | Purpose |
