@@ -1,4 +1,4 @@
-FROM golang:1.22-bookworm AS build
+FROM golang:1.25-bookworm AS build
 
 WORKDIR /src
 
@@ -32,4 +32,3 @@ COPY --chown=nonroot:nonroot --from=build /out/data /data
 EXPOSE 8080
 
 ENTRYPOINT ["/app/caddytower"]
-
