@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	neturl "net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -12,7 +13,13 @@ import (
 	"caddytower/internal/ui"
 )
 
-const controllerReleaseCheckTimeout = 3 * time.Second
+const controllerReleaseCheckTimeout = 8 * time.Second
+
+var (
+	releaseLookupHTTPClient = http.DefaultClient
+	releaseLookupAPIBaseURL = "https://api.github.com"
+	releaseLookupWebBaseURL = "https://github.com"
+)
 
 type githubRelease struct {
 	TagName string `json:"tag_name"`
@@ -97,29 +104,72 @@ func (s *Server) controllerUpdateStatus(ctx context.Context) ui.ControllerUpdate
 }
 
 func fetchLatestRelease(ctx context.Context, owner, repo string) (githubRelease, error) {
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://api.github.com/repos/"+owner+"/"+repo+"/releases/latest", nil)
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimRight(releaseLookupAPIBaseURL, "/")+"/repos/"+owner+"/"+repo+"/releases/latest", nil)
 	if err != nil {
 		return githubRelease{}, err
 	}
 	request.Header.Set("Accept", "application/vnd.github+json")
+	request.Header.Set("User-Agent", "caddytower-release-check")
 
-	response, err := http.DefaultClient.Do(request)
+	response, err := releaseLookupHTTPClient.Do(request)
 	if err != nil {
-		return githubRelease{}, err
+		return fetchLatestReleaseFromWeb(ctx, owner, repo, err)
 	}
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {
-		return githubRelease{}, fmt.Errorf("github releases returned %d", response.StatusCode)
+		return fetchLatestReleaseFromWeb(ctx, owner, repo, fmt.Errorf("github releases returned %d", response.StatusCode))
 	}
 
 	var release githubRelease
 	if err := json.NewDecoder(response.Body).Decode(&release); err != nil {
-		return githubRelease{}, err
+		return fetchLatestReleaseFromWeb(ctx, owner, repo, err)
 	}
 	if strings.TrimSpace(release.TagName) == "" {
-		return githubRelease{}, fmt.Errorf("github release tag is empty")
+		return fetchLatestReleaseFromWeb(ctx, owner, repo, fmt.Errorf("github release tag is empty"))
 	}
 	return release, nil
+}
+
+func fetchLatestReleaseFromWeb(ctx context.Context, owner, repo string, cause error) (githubRelease, error) {
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimRight(releaseLookupWebBaseURL, "/")+"/"+owner+"/"+repo+"/releases/latest", nil)
+	if err != nil {
+		return githubRelease{}, err
+	}
+	request.Header.Set("User-Agent", "caddytower-release-check")
+
+	response, err := releaseLookupHTTPClient.Do(request)
+	if err != nil {
+		return githubRelease{}, fmt.Errorf("github api lookup failed: %w; web fallback failed: %w", cause, err)
+	}
+	defer response.Body.Close()
+
+	release, err := releaseFromURL(response.Request.URL)
+	if err != nil {
+		if response.StatusCode != http.StatusOK {
+			return githubRelease{}, fmt.Errorf("github api lookup failed: %w; web fallback returned %d", cause, response.StatusCode)
+		}
+		return githubRelease{}, fmt.Errorf("github api lookup failed: %w; web fallback parse failed: %w", cause, err)
+	}
+	return release, nil
+}
+
+func releaseFromURL(urlValue *neturl.URL) (githubRelease, error) {
+	if urlValue == nil {
+		return githubRelease{}, fmt.Errorf("release url is nil")
+	}
+	trimmedPath := strings.Trim(strings.TrimSpace(urlValue.Path), "/")
+	parts := strings.Split(trimmedPath, "/")
+	if len(parts) < 5 || parts[len(parts)-2] != "tag" {
+		return githubRelease{}, fmt.Errorf("could not parse release tag from %q", urlValue.String())
+	}
+	tag := strings.TrimSpace(parts[len(parts)-1])
+	if tag == "" {
+		return githubRelease{}, fmt.Errorf("release tag is empty in %q", urlValue.String())
+	}
+	return githubRelease{
+		TagName: tag,
+		HTMLURL: urlValue.String(),
+	}, nil
 }
 
 func parseGHCRImageRef(value string) (string, string, string, bool) {
