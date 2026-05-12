@@ -39,6 +39,12 @@ func TestLoadFromLookupDefaults(t *testing.T) {
 	if !cfg.BackupsIncludeEngineDumps {
 		t.Fatal("BackupsIncludeEngineDumps should default to true")
 	}
+	if !cfg.VPSWarningsEnabled || cfg.VPSRAMFreeWarnPercent != 15 || cfg.VPSDiskFreeWarnPercent != 15 {
+		t.Fatalf("unexpected warning defaults: %#v", cfg)
+	}
+	if cfg.VPSWarningCheckMinutes != 15 || cfg.VPSWarningCooldownMinutes != 360 {
+		t.Fatalf("unexpected warning timing defaults: %#v", cfg)
+	}
 }
 
 func TestLoadFromLookupRejectsInvalidURL(t *testing.T) {
@@ -159,5 +165,56 @@ func TestLoadFromLookupRejectsInvalidBackupBool(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("expected error for invalid backup bool")
+	}
+}
+
+func TestLoadFromLookupParsesWarningEmailSettings(t *testing.T) {
+	t.Parallel()
+
+	cfg, err := LoadFromLookup(func(key string) (string, bool) {
+		switch key {
+		case "CADDYTOWER_VPS_RAM_FREE_WARN_PERCENT":
+			return "20", true
+		case "CADDYTOWER_VPS_DISK_FREE_WARN_PERCENT":
+			return "25", true
+		case "CADDYTOWER_VPS_WARNING_CHECK_MINUTES":
+			return "5", true
+		case "CADDYTOWER_VPS_WARNING_COOLDOWN_MINUTES":
+			return "60", true
+		case "CADDYTOWER_SMTP_HOST":
+			return "smtp.example.com", true
+		case "CADDYTOWER_SMTP_PORT":
+			return "2525", true
+		case "CADDYTOWER_SMTP_FROM":
+			return "caddytower@example.com", true
+		case "CADDYTOWER_SMTP_TO":
+			return "ops@example.com", true
+		default:
+			return "", false
+		}
+	})
+	if err != nil {
+		t.Fatalf("LoadFromLookup() error = %v", err)
+	}
+
+	if cfg.VPSRAMFreeWarnPercent != 20 || cfg.VPSDiskFreeWarnPercent != 25 || cfg.VPSWarningCheckMinutes != 5 || cfg.VPSWarningCooldownMinutes != 60 {
+		t.Fatalf("unexpected warning config: %#v", cfg)
+	}
+	if !cfg.WarningEmailConfigured() {
+		t.Fatal("WarningEmailConfigured() should be true")
+	}
+}
+
+func TestLoadFromLookupRejectsInvalidWarningPercent(t *testing.T) {
+	t.Parallel()
+
+	_, err := LoadFromLookup(func(key string) (string, bool) {
+		if key == "CADDYTOWER_VPS_RAM_FREE_WARN_PERCENT" {
+			return "0", true
+		}
+		return "", false
+	})
+	if err == nil {
+		t.Fatal("expected error for invalid warning percent")
 	}
 }

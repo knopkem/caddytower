@@ -59,6 +59,9 @@ func TestRouterServesHome(t *testing.T) {
 	if !strings.Contains(rec.Body.String(), "How to set this up") {
 		t.Fatalf("body missing dashboard helper copy: %q", rec.Body.String())
 	}
+	if !strings.Contains(rec.Body.String(), "/assets/vendor/htmx.min.js") || strings.Contains(rec.Body.String(), "/assets/vendor/pico.classless.min.css") || strings.Contains(rec.Body.String(), "/assets/vendor/alpine.min.js") {
+		t.Fatalf("body has unexpected ui assets: %q", rec.Body.String())
+	}
 }
 
 func TestSecurityHeadersForPublicAdminPages(t *testing.T) {
@@ -223,10 +226,10 @@ func TestDeployWebhookRedeploysProject(t *testing.T) {
 	}, stateStore, nil, &serverTestDocker{}, &serverTestCaddy{}, newNoopLogger())
 
 	project, err := projectService.CreateWebProject(context.Background(), projects.WebProjectInput{
-		Name:         "Books",
-		Slug:         "books",
-		ImageRef:     "ghcr.io/example/books:latest",
-		Subdomain:    "books",
+		Name:         "Demo",
+		Slug:         "demo",
+		ImageRef:     "ghcr.io/example/demo:latest",
+		Subdomain:    "demo",
 		InternalPort: 3000,
 	}, "")
 	if err != nil {
@@ -242,7 +245,7 @@ func TestDeployWebhookRedeploysProject(t *testing.T) {
 	}, webUI, newNoopLogger(), version.Info{Version: "test"}, stateStore, nil, projectService, nil)
 
 	body := `{"ref":"refs/heads/main"}`
-	req := httptest.NewRequest(http.MethodPost, "/api/webhooks/deploy/books", strings.NewReader(body))
+	req := httptest.NewRequest(http.MethodPost, "/api/webhooks/deploy/demo", strings.NewReader(body))
 	req.Header.Set("X-Signature", testWebhookSignature(project.WebhookSecret, []byte(body)))
 	rec := httptest.NewRecorder()
 
@@ -292,10 +295,10 @@ func TestProjectLogsStreamRequiresAuthAndStreams(t *testing.T) {
 	}, stateStore, nil, &serverTestDocker{logContent: "alpha\nbeta\n"}, &serverTestCaddy{}, newNoopLogger())
 
 	project, err := projectService.CreateWebProject(context.Background(), projects.WebProjectInput{
-		Name:         "Books",
-		Slug:         "books",
-		ImageRef:     "ghcr.io/example/books:latest",
-		Subdomain:    "books",
+		Name:         "Demo",
+		Slug:         "demo",
+		ImageRef:     "ghcr.io/example/demo:latest",
+		Subdomain:    "demo",
 		InternalPort: 3000,
 	}, "")
 	if err != nil {

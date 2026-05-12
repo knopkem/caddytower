@@ -47,4 +47,7 @@ func TestRenderHome(t *testing.T) {
 	if !strings.Contains(body, "http://shared-caddy:2019") {
 		t.Fatalf("rendered body missing caddy admin url: %q", body)
 	}
+	if !strings.Contains(body, "/assets/vendor/htmx.min.js") || strings.Contains(body, "/assets/vendor/pico.classless.min.css") {
+		t.Fatalf("rendered body has unexpected ui assets: %q", body)
+	}
 }

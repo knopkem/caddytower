@@ -129,7 +129,7 @@ func TestMergeManagedRoutesPreservesUnmanagedHosts(t *testing.T) {
 						"listen": [":80", ":443"],
 						"routes": [
 							{"match":[{"host":["legacy.example.com"]}],"handle":[{"handler":"reverse_proxy","upstreams":[{"dial":"legacy:80"}]}],"terminal":true},
-							{"match":[{"host":["books.example.com"]}],"handle":[{"handler":"reverse_proxy","upstreams":[{"dial":"old-books:3000"}]}],"terminal":true}
+							{"match":[{"host":["demo.example.com"]}],"handle":[{"handler":"reverse_proxy","upstreams":[{"dial":"old-demo:3000"}]}],"terminal":true}
 						]
 					}
 				}
@@ -139,9 +139,9 @@ func TestMergeManagedRoutesPreservesUnmanagedHosts(t *testing.T) {
 	}`)
 
 	merged, err := MergeManagedRoutes(current, []HTTPRoute{
-		{Host: "books.example.com", Upstreams: []string{"books:3000"}},
+		{Host: "demo.example.com", Upstreams: []string{"demo:3000"}},
 		{Host: "cameos.example.com", Upstreams: []string{"cameos:8080"}},
-	}, []string{"books.example.com", "cameos.example.com"})
+	}, []string{"demo.example.com", "cameos.example.com"})
 	if err != nil {
 		t.Fatalf("MergeManagedRoutes() error = %v", err)
 	}
@@ -172,7 +172,7 @@ func TestExtractHTTPRoutesReadsReverseProxyHosts(t *testing.T) {
 				"servers": {
 					"srv0": {
 						"routes": [
-							{"match":[{"host":["books.example.com"]}],"handle":[{"handler":"reverse_proxy","upstreams":[{"dial":"books:3000"}]}],"terminal":true},
+							{"match":[{"host":["demo.example.com"]}],"handle":[{"handler":"reverse_proxy","upstreams":[{"dial":"demo:3000"}]}],"terminal":true},
 							{"match":[{"host":["ignored.example.com"]}],"handle":[{"handler":"static_response"}],"terminal":true}
 						]
 					}
@@ -189,7 +189,7 @@ func TestExtractHTTPRoutesReadsReverseProxyHosts(t *testing.T) {
 	if len(routes) != 1 {
 		t.Fatalf("route count = %d", len(routes))
 	}
-	if routes[0].Host != "books.example.com" || routes[0].Upstreams[0] != "books:3000" {
+	if routes[0].Host != "demo.example.com" || routes[0].Upstreams[0] != "demo:3000" {
 		t.Fatalf("routes = %#v", routes)
 	}
 }

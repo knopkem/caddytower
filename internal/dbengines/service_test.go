@@ -10,7 +10,7 @@ func TestAttachDatabaseRejectsInvalidEnvVarNameBeforeProvisioning(t *testing.T) 
 	t.Parallel()
 
 	svc := New(nil, nil, nil)
-	_, err := svc.AttachDatabase(context.Background(), "project-id", "books", enginePostgres, "DATABASE-URL")
+	_, err := svc.AttachDatabase(context.Background(), "project-id", "demo", enginePostgres, "DATABASE-URL")
 	if err == nil {
 		t.Fatal("expected invalid env var error")
 	}

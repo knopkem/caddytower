@@ -15,6 +15,7 @@ import (
 	"caddytower/internal/caddyadmin"
 	"caddytower/internal/config"
 	"caddytower/internal/dockerx"
+	"caddytower/internal/monitor"
 	"caddytower/internal/projects"
 	"caddytower/internal/secrets"
 	"caddytower/internal/server"
@@ -71,8 +72,9 @@ func main() {
 	if cfg.BackupsEnabled {
 		backupService = backups.New(cfg, stateStore, secretService, dockerService, logger)
 	}
+	monitorService := monitor.New(cfg, logger)
 
-	app := server.New(cfg, webUI, logger, version.Current(), stateStore, authService, projectService, backupService)
+	app := server.New(cfg, webUI, logger, version.Current(), stateStore, authService, projectService, backupService, monitorService)
 
 	srv := &http.Server{
 		Addr:              cfg.HTTPAddr,
@@ -89,6 +91,7 @@ func main() {
 	if backupService != nil {
 		backupService.Start(ctx)
 	}
+	monitorService.Start(ctx)
 
 	go func() {
 		<-ctx.Done()

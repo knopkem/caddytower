@@ -2,6 +2,7 @@ package dockerx
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"slices"
@@ -125,11 +126,30 @@ func (s *Service) PullImage(ctx context.Context, imageRef string) error {
 	}
 	defer reader.Close()
 
-	if _, err := io.Copy(io.Discard, reader); err != nil {
-		return fmt.Errorf("drain image pull stream for %s: %w", imageRef, err)
-	}
+	decoder := json.NewDecoder(reader)
+	for {
+		var message dockerJSONMessage
+		if err := decoder.Decode(&message); err != nil {
+			if err == io.EOF {
+				return nil
+			}
+			return fmt.Errorf("read image pull stream for %s: %w", imageRef, err)
+		}
 
-	return nil
+		if message.Error != "" {
+			return fmt.Errorf("pull image %s: %s", imageRef, message.Error)
+		}
+		if message.ErrorDetail.Message != "" {
+			return fmt.Errorf("pull image %s: %s", imageRef, message.ErrorDetail.Message)
+		}
+	}
+}
+
+type dockerJSONMessage struct {
+	Error       string `json:"error"`
+	ErrorDetail struct {
+		Message string `json:"message"`
+	} `json:"errorDetail"`
 }
 
 func (s *Service) ListContainersByLabel(ctx context.Context, key, value string) ([]ContainerSummary, error) {

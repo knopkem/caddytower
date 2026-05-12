@@ -144,13 +144,32 @@ func TestPullImageDrainsReader(t *testing.T) {
 
 	fake := &fakeAPIClient{
 		imagePullFn: func(context.Context, string, image.PullOptions) (io.ReadCloser, error) {
-			return io.NopCloser(strings.NewReader(`{"status":"done"}`)), nil
+			return io.NopCloser(strings.NewReader("{\"status\":\"Pulling from knopkem/cameos\"}\n{\"status\":\"done\"}\n")), nil
 		},
 	}
 
 	service := New(fake)
 	if err := service.PullImage(context.Background(), "ghcr.io/example/demo:latest"); err != nil {
 		t.Fatalf("PullImage() error = %v", err)
+	}
+}
+
+func TestPullImageReturnsStreamError(t *testing.T) {
+	t.Parallel()
+
+	fake := &fakeAPIClient{
+		imagePullFn: func(context.Context, string, image.PullOptions) (io.ReadCloser, error) {
+			return io.NopCloser(strings.NewReader("{\"errorDetail\":{\"message\":\"denied\"},\"error\":\"denied\"}\n")), nil
+		},
+	}
+
+	service := New(fake)
+	err := service.PullImage(context.Background(), "ghcr.io/knopkem/cameos:latest")
+	if err == nil {
+		t.Fatal("expected pull error")
+	}
+	if !strings.Contains(err.Error(), "denied") {
+		t.Fatalf("error = %v", err)
 	}
 }
 

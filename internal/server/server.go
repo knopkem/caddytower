@@ -24,6 +24,7 @@ import (
 	"caddytower/internal/auth"
 	"caddytower/internal/backups"
 	"caddytower/internal/config"
+	"caddytower/internal/monitor"
 	"caddytower/internal/projects"
 	"caddytower/internal/store"
 	"caddytower/internal/ui"
@@ -43,6 +44,7 @@ type Server struct {
 	auth     *auth.Service
 	projects *projects.Service
 	backups  *backups.Service
+	monitor  *monitor.Service
 	limiter  *webhookRateLimiter
 }
 
@@ -50,7 +52,11 @@ type readinessChecker interface {
 	Ping(context.Context) error
 }
 
-func New(cfg config.Config, webUI *ui.UI, logger *slog.Logger, build version.Info, ready readinessChecker, authService *auth.Service, projectService *projects.Service, backupService *backups.Service) *Server {
+func New(cfg config.Config, webUI *ui.UI, logger *slog.Logger, build version.Info, ready readinessChecker, authService *auth.Service, projectService *projects.Service, backupService *backups.Service, monitorServices ...*monitor.Service) *Server {
+	var monitorService *monitor.Service
+	if len(monitorServices) > 0 {
+		monitorService = monitorServices[0]
+	}
 	return &Server{
 		cfg:      cfg,
 		ui:       webUI,
@@ -60,6 +66,7 @@ func New(cfg config.Config, webUI *ui.UI, logger *slog.Logger, build version.Inf
 		auth:     authService,
 		projects: projectService,
 		backups:  backupService,
+		monitor:  monitorService,
 		limiter:  newWebhookRateLimiter(10, time.Minute),
 	}
 }
@@ -224,6 +231,7 @@ func (s *Server) renderDashboard(w http.ResponseWriter, r *http.Request, current
 		BackupsRetentionDays:      s.cfg.BackupsRetentionDays,
 		BackupsScheduleUTC:        s.cfg.BackupsScheduleUTC,
 		BackupsIncludeEngineDumps: s.cfg.BackupsIncludeEngineDumps,
+		VPSStatus:                 s.vpsStatusData(),
 	}
 
 	if err := s.ui.Render(w, "home.gohtml", data); err != nil {
@@ -1075,6 +1083,44 @@ func projectEndpointSummary(project projects.Project) string {
 	return strings.ReplaceAll(projects.PortMappingsText(project.Ports), "\n", ", ")
 }
 
+func (s *Server) vpsStatusData() ui.VPSStatusData {
+	if s.monitor == nil {
+		return ui.VPSStatusData{
+			Available:     false,
+			ErrorMessage:  "VPS status monitor is not available.",
+			RAMThreshold:  s.cfg.VPSRAMFreeWarnPercent,
+			DiskThreshold: s.cfg.VPSDiskFreeWarnPercent,
+		}
+	}
+	status, err := s.monitor.Snapshot()
+	if err != nil {
+		s.logger.Warn("collect vps status", "error", err)
+		return ui.VPSStatusData{
+			Available:     false,
+			ErrorMessage:  err.Error(),
+			RAMThreshold:  s.cfg.VPSRAMFreeWarnPercent,
+			DiskThreshold: s.cfg.VPSDiskFreeWarnPercent,
+		}
+	}
+	return ui.VPSStatusData{
+		Available:       true,
+		MemorySummary:   fmt.Sprintf("%s / %s", humanSizeUint(status.Memory.UsedBytes), humanSizeUint(status.Memory.TotalBytes)),
+		MemoryUsedPct:   status.Memory.UsedPercent,
+		MemoryFreePct:   status.Memory.FreePercent,
+		DiskSummary:     fmt.Sprintf("%s / %s", humanSizeUint(status.Disk.UsedBytes), humanSizeUint(status.Disk.TotalBytes)),
+		DiskUsedPct:     status.Disk.UsedPercent,
+		DiskFreePct:     status.Disk.FreePercent,
+		DiskPath:        status.DiskPath,
+		WarningCount:    len(status.Warnings),
+		Warnings:        status.Warnings,
+		RAMThreshold:    status.RAMThreshold,
+		DiskThreshold:   status.DiskThreshold,
+		EmailConfigured: status.EmailConfigured,
+		EmailTo:         status.EmailTo,
+		CheckedAt:       status.CollectedAt.Format("2006-01-02 15:04:05 MST"),
+	}
+}
+
 func humanSize(size int64) string {
 	const (
 		KB = 1024
@@ -1091,6 +1137,13 @@ func humanSize(size int64) string {
 	default:
 		return fmt.Sprintf("%d B", size)
 	}
+}
+
+func humanSizeUint(size uint64) string {
+	if size > uint64(^uint(0)>>1) {
+		return fmt.Sprintf("%.1f GB", float64(size)/(1024*1024*1024))
+	}
+	return humanSize(int64(size))
 }
 
 func validWebhookSignature(secret, provided string, payload []byte) bool {

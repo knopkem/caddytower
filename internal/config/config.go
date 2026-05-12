@@ -22,6 +22,17 @@ type Config struct {
 	BackupsRetentionDays      int
 	BackupsScheduleUTC        string
 	BackupsIncludeEngineDumps bool
+	VPSWarningsEnabled        bool
+	VPSRAMFreeWarnPercent     int
+	VPSDiskFreeWarnPercent    int
+	VPSWarningCheckMinutes    int
+	VPSWarningCooldownMinutes int
+	SMTPHost                  string
+	SMTPPort                  int
+	SMTPUsername              string
+	SMTPPassword              string
+	SMTPFrom                  string
+	SMTPTo                    string
 }
 
 func Load() (Config, error) {
@@ -56,6 +67,42 @@ func LoadFromLookup(lookup func(string) (string, bool)) (Config, error) {
 	cfg.BackupsRetentionDays = retentionDays
 	cfg.BackupsScheduleUTC = strings.TrimSpace(envOrDefault(lookup, "CADDYTOWER_BACKUPS_SCHEDULE_UTC", "02:30"))
 
+	warningsEnabled, err := envBoolOrDefault(lookup, "CADDYTOWER_VPS_WARNINGS_ENABLED", true)
+	if err != nil {
+		return Config{}, err
+	}
+	cfg.VPSWarningsEnabled = warningsEnabled
+	ramWarnPercent, err := envIntOrDefault(lookup, "CADDYTOWER_VPS_RAM_FREE_WARN_PERCENT", 15)
+	if err != nil {
+		return Config{}, err
+	}
+	cfg.VPSRAMFreeWarnPercent = ramWarnPercent
+	diskWarnPercent, err := envIntOrDefault(lookup, "CADDYTOWER_VPS_DISK_FREE_WARN_PERCENT", 15)
+	if err != nil {
+		return Config{}, err
+	}
+	cfg.VPSDiskFreeWarnPercent = diskWarnPercent
+	checkMinutes, err := envIntOrDefault(lookup, "CADDYTOWER_VPS_WARNING_CHECK_MINUTES", 15)
+	if err != nil {
+		return Config{}, err
+	}
+	cfg.VPSWarningCheckMinutes = checkMinutes
+	cooldownMinutes, err := envIntOrDefault(lookup, "CADDYTOWER_VPS_WARNING_COOLDOWN_MINUTES", 360)
+	if err != nil {
+		return Config{}, err
+	}
+	cfg.VPSWarningCooldownMinutes = cooldownMinutes
+	smtpPort, err := envIntOrDefault(lookup, "CADDYTOWER_SMTP_PORT", 587)
+	if err != nil {
+		return Config{}, err
+	}
+	cfg.SMTPPort = smtpPort
+	cfg.SMTPHost = strings.TrimSpace(envOrDefault(lookup, "CADDYTOWER_SMTP_HOST", ""))
+	cfg.SMTPUsername = strings.TrimSpace(envOrDefault(lookup, "CADDYTOWER_SMTP_USERNAME", ""))
+	cfg.SMTPPassword = strings.TrimSpace(envOrDefault(lookup, "CADDYTOWER_SMTP_PASSWORD", ""))
+	cfg.SMTPFrom = strings.TrimSpace(envOrDefault(lookup, "CADDYTOWER_SMTP_FROM", ""))
+	cfg.SMTPTo = strings.TrimSpace(envOrDefault(lookup, "CADDYTOWER_SMTP_TO", ""))
+
 	if strings.TrimSpace(cfg.HTTPAddr) == "" {
 		return Config{}, fmt.Errorf("CADDYTOWER_HTTP_ADDR must not be empty")
 	}
@@ -78,6 +125,21 @@ func LoadFromLookup(lookup func(string) (string, bool)) (Config, error) {
 	if err := validateClock("CADDYTOWER_BACKUPS_SCHEDULE_UTC", cfg.BackupsScheduleUTC); err != nil {
 		return Config{}, err
 	}
+	if err := validatePercent("CADDYTOWER_VPS_RAM_FREE_WARN_PERCENT", cfg.VPSRAMFreeWarnPercent); err != nil {
+		return Config{}, err
+	}
+	if err := validatePercent("CADDYTOWER_VPS_DISK_FREE_WARN_PERCENT", cfg.VPSDiskFreeWarnPercent); err != nil {
+		return Config{}, err
+	}
+	if cfg.VPSWarningCheckMinutes < 1 {
+		return Config{}, fmt.Errorf("CADDYTOWER_VPS_WARNING_CHECK_MINUTES must be at least 1")
+	}
+	if cfg.VPSWarningCooldownMinutes < 1 {
+		return Config{}, fmt.Errorf("CADDYTOWER_VPS_WARNING_COOLDOWN_MINUTES must be at least 1")
+	}
+	if cfg.SMTPPort < 1 || cfg.SMTPPort > 65535 {
+		return Config{}, fmt.Errorf("CADDYTOWER_SMTP_PORT must be between 1 and 65535")
+	}
 
 	return cfg, nil
 }
@@ -88,6 +150,10 @@ func (c Config) StateDBPath() string {
 
 func (c Config) BackupDir() string {
 	return filepath.Join(c.DataDir, "backups")
+}
+
+func (c Config) WarningEmailConfigured() bool {
+	return c.SMTPHost != "" && c.SMTPFrom != "" && c.SMTPTo != ""
 }
 
 func envOrDefault(lookup func(string) (string, bool), key, fallback string) string {
@@ -194,6 +260,13 @@ func validateClock(name, raw string) error {
 	minute, err := strconv.Atoi(parts[1])
 	if err != nil || minute < 0 || minute > 59 {
 		return fmt.Errorf("%s must use HH:MM 24-hour format", name)
+	}
+	return nil
+}
+
+func validatePercent(name string, value int) error {
+	if value < 1 || value > 99 {
+		return fmt.Errorf("%s must be between 1 and 99", name)
 	}
 	return nil
 }

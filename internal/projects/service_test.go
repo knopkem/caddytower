@@ -46,10 +46,10 @@ func TestCreateWebProjectDeploysAndPersists(t *testing.T) {
 	}
 
 	project, err := svc.CreateWebProject(context.Background(), WebProjectInput{
-		Name:              "Books",
-		Slug:              "books",
-		ImageRef:          "ghcr.io/example/books:latest",
-		Subdomain:         "books",
+		Name:              "Demo",
+		Slug:              "demo",
+		ImageRef:          "ghcr.io/example/demo:latest",
+		Subdomain:         "demo",
 		InternalPort:      3000,
 		WatchtowerEnabled: true,
 		EnvText:           "NODE_ENV=production\nAPI_KEY=secret",
@@ -58,13 +58,13 @@ func TestCreateWebProjectDeploysAndPersists(t *testing.T) {
 		t.Fatalf("CreateWebProject() error = %v", err)
 	}
 
-	if project.FullDomain != "books.example.com" {
+	if project.FullDomain != "demo.example.com" {
 		t.Fatalf("project.FullDomain = %q", project.FullDomain)
 	}
 	if docker.recreateCount != 1 {
 		t.Fatalf("recreateCount = %d", docker.recreateCount)
 	}
-	if len(caddy.managedHosts) != 1 || caddy.managedHosts[0] != "books.example.com" {
+	if len(caddy.managedHosts) != 1 || caddy.managedHosts[0] != "demo.example.com" {
 		t.Fatalf("managed hosts = %#v", caddy.managedHosts)
 	}
 	if cloudflareFactory.client.upsertCount != 1 {
@@ -100,10 +100,10 @@ func TestDeleteProjectRemovesManagedResources(t *testing.T) {
 	}
 
 	project, err := svc.CreateWebProject(context.Background(), WebProjectInput{
-		Name:         "Books",
-		Slug:         "books",
-		ImageRef:     "ghcr.io/example/books:latest",
-		Subdomain:    "books",
+		Name:         "Demo",
+		Slug:         "demo",
+		ImageRef:     "ghcr.io/example/demo:latest",
+		Subdomain:    "demo",
 		InternalPort: 3000,
 	}, "")
 	if err != nil {
@@ -171,10 +171,10 @@ func TestAttachDatabaseAddsAttachmentAndRuntimeEnv(t *testing.T) {
 	svc.db = &fakeDBService{}
 
 	project, err := svc.CreateWebProject(context.Background(), WebProjectInput{
-		Name:         "Books",
-		Slug:         "books",
-		ImageRef:     "ghcr.io/example/books:latest",
-		Subdomain:    "books",
+		Name:         "Demo",
+		Slug:         "demo",
+		ImageRef:     "ghcr.io/example/demo:latest",
+		Subdomain:    "demo",
 		InternalPort: 3000,
 	}, "")
 	if err != nil {
@@ -212,10 +212,10 @@ func TestDeleteProjectDropsAttachedDatabases(t *testing.T) {
 	svc.db = fakeDB
 
 	project, err := svc.CreateWebProject(context.Background(), WebProjectInput{
-		Name:         "Books",
-		Slug:         "books",
-		ImageRef:     "ghcr.io/example/books:latest",
-		Subdomain:    "books",
+		Name:         "Demo",
+		Slug:         "demo",
+		ImageRef:     "ghcr.io/example/demo:latest",
+		Subdomain:    "demo",
 		InternalPort: 3000,
 	}, "")
 	if err != nil {
@@ -247,17 +247,17 @@ func TestRedeployProjectByWebhookUsesSlug(t *testing.T) {
 	svc := New(config.Config{RootDomain: "example.com"}, stateStore, nil, docker, caddy, slog.New(slog.NewTextHandler(io.Discard, nil)))
 
 	project, err := svc.CreateWebProject(context.Background(), WebProjectInput{
-		Name:         "Books",
-		Slug:         "books",
-		ImageRef:     "ghcr.io/example/books:latest",
-		Subdomain:    "books",
+		Name:         "Demo",
+		Slug:         "demo",
+		ImageRef:     "ghcr.io/example/demo:latest",
+		Subdomain:    "demo",
 		InternalPort: 3000,
 	}, "")
 	if err != nil {
 		t.Fatalf("CreateWebProject() error = %v", err)
 	}
 
-	redeployed, err := svc.RedeployProjectByWebhook(context.Background(), "books")
+	redeployed, err := svc.RedeployProjectByWebhook(context.Background(), "demo")
 	if err != nil {
 		t.Fatalf("RedeployProjectByWebhook() error = %v", err)
 	}
@@ -279,10 +279,10 @@ func TestStreamProjectLogsUsesContainerName(t *testing.T) {
 	svc := New(config.Config{RootDomain: "example.com"}, stateStore, nil, docker, caddy, slog.New(slog.NewTextHandler(io.Discard, nil)))
 
 	project, err := svc.CreateWebProject(context.Background(), WebProjectInput{
-		Name:         "Books",
-		Slug:         "books",
-		ImageRef:     "ghcr.io/example/books:latest",
-		Subdomain:    "books",
+		Name:         "Demo",
+		Slug:         "demo",
+		ImageRef:     "ghcr.io/example/demo:latest",
+		Subdomain:    "demo",
 		InternalPort: 3000,
 	}, "")
 	if err != nil {

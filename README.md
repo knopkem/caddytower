@@ -6,7 +6,7 @@ Caddy, Cloudflare DNS, and image-only deployments from GHCR.
 This repository currently contains:
 
 - Go 1.25 app with a small chi-based HTTP server
-- Embedded HTML templates and static assets
+- Embedded HTML templates, custom CSS, and vendored HTMX for progressive enhancement
 - Health and version endpoints
 - First-user bootstrap, password login, TOTP, sessions, and CSRF protection
 - Deployment settings for shared Caddy and Cloudflare DNS
@@ -70,12 +70,27 @@ Aegis, 2FAS, and similar apps.
 | `CADDYTOWER_BACKUPS_RETENTION_DAYS` | `14` | Days of backup archives to keep |
 | `CADDYTOWER_BACKUPS_SCHEDULE_UTC` | `02:30` | Daily backup time in UTC (`HH:MM`) |
 | `CADDYTOWER_BACKUPS_INCLUDE_ENGINE_DUMPS` | `true` | Include shared Postgres/MariaDB dumps in archives |
+| `CADDYTOWER_VPS_WARNINGS_ENABLED` | `true` | Enable RAM/disk warning checks |
+| `CADDYTOWER_VPS_RAM_FREE_WARN_PERCENT` | `15` | Warn when available RAM falls below this percentage |
+| `CADDYTOWER_VPS_DISK_FREE_WARN_PERCENT` | `15` | Warn when free disk space falls below this percentage |
+| `CADDYTOWER_VPS_WARNING_CHECK_MINUTES` | `15` | RAM/disk warning check interval |
+| `CADDYTOWER_VPS_WARNING_COOLDOWN_MINUTES` | `360` | Minimum minutes between repeated warning emails |
+| `CADDYTOWER_SMTP_HOST` | _(empty)_ | Optional SMTP host for warning emails |
+| `CADDYTOWER_SMTP_PORT` | `587` | Optional SMTP port for warning emails |
+| `CADDYTOWER_SMTP_USERNAME` | _(empty)_ | Optional SMTP username |
+| `CADDYTOWER_SMTP_PASSWORD` | _(empty)_ | Optional SMTP password |
+| `CADDYTOWER_SMTP_FROM` | _(empty)_ | Optional warning email sender |
+| `CADDYTOWER_SMTP_TO` | _(empty)_ | Optional warning email recipient |
 
 The container image overrides `CADDYTOWER_DATA_DIR` to `/data`.
 
 For production exposure, `CADDYTOWER_PUBLIC_BASE_URL` must use HTTPS and
 `CADDYTOWER_MASTER_KEY` must be set so project environment values, database
 credentials, Cloudflare tokens, and TOTP secrets are encrypted at rest.
+
+The dashboard shows VPS RAM and disk usage. Email warning delivery is optional
+and only active when `CADDYTOWER_SMTP_HOST`, `CADDYTOWER_SMTP_FROM`, and
+`CADDYTOWER_SMTP_TO` are configured.
 
 ## Security notes
 

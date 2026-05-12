@@ -105,12 +105,32 @@ type HomePageData struct {
 	BackupsRetentionDays      int
 	BackupsScheduleUTC        string
 	BackupsIncludeEngineDumps bool
+	VPSStatus                 VPSStatusData
 }
 
 type BackupItem struct {
 	Name      string
 	CreatedAt string
 	Size      string
+}
+
+type VPSStatusData struct {
+	Available       bool
+	ErrorMessage    string
+	MemorySummary   string
+	MemoryUsedPct   int
+	MemoryFreePct   int
+	DiskSummary     string
+	DiskUsedPct     int
+	DiskFreePct     int
+	DiskPath        string
+	WarningCount    int
+	Warnings        []string
+	RAMThreshold    int
+	DiskThreshold   int
+	EmailConfigured bool
+	EmailTo         string
+	CheckedAt       string
 }
 
 type SetupPageData struct {
