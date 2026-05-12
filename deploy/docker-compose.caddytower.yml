@@ -1,4 +1,36 @@
 services:
+  shared-caddy:
+    profiles:
+      - bundled-caddy
+    image: caddy:2.10
+    container_name: shared-caddy
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    networks:
+      - edge
+
+  watchtower:
+    profiles:
+      - bundled-watchtower
+    image: containrrr/watchtower:1.7.1
+    container_name: watchtower
+    restart: unless-stopped
+    command:
+      - --label-enable
+      - --cleanup
+      - --interval
+      - "300"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    networks:
+      - edge
+
   caddytower:
     image: ${CADDYTOWER_IMAGE:-ghcr.io/REPLACE_WITH_OWNER/caddytower:latest}
     container_name: caddytower
@@ -17,8 +49,9 @@ services:
 
 volumes:
   caddytower-data:
+  caddy-data:
+  caddy-config:
 
 networks:
   edge:
     external: true
-

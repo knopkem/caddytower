@@ -34,12 +34,26 @@ Open <http://localhost:8080>.
 ./scripts/bootstrap-caddytower.sh /opt/caddytower
 ```
 
+On a fresh VPS, the only required host dependency is **Docker with the Compose
+plugin**. The bootstrap script checks that Docker is installed and reachable
+before doing anything else.
+
 The bootstrap script:
 
 - creates the external Docker `edge` network if needed
 - copies the compose file and example env file into `/opt/caddytower`
+- copies a minimal Caddy config that exposes the Admin API on the Docker network
 - generates `CADDYTOWER_MASTER_KEY` on first run
+- starts bundled `shared-caddy` and `watchtower` containers when they are not
+  already present
 - starts the controller once `CADDYTOWER_IMAGE` has been configured
+
+If your VPS already has `shared-caddy` and/or `watchtower`, the script leaves
+those existing containers in place and starts only the missing pieces.
+
+On the first run, the script may stop after generating `caddytower.env` so you
+can fill in `CADDYTOWER_IMAGE`, `CADDYTOWER_PUBLIC_BASE_URL`, and
+`CADDYTOWER_ROOT_DOMAIN`. After that, run the same bootstrap command again.
 
 The initial compose file binds CaddyTower to `127.0.0.1:8080` only, so the
 recommended first-time setup is an SSH tunnel:
@@ -125,13 +139,15 @@ Use this sequence to move the live VPS from the handwritten shared Caddy setup t
 
 1. **Prepare the controller**
     - Build/push the current image to GHCR.
-    - Copy `deploy/docker-compose.caddytower.yml`, `deploy/caddytower.env.example`, and `scripts/bootstrap-caddytower.sh` to the VPS.
+    - On a fresh VPS, install Docker (including the Compose plugin).
+    - Copy `deploy/docker-compose.caddytower.yml`, `deploy/caddytower.env.example`, `deploy/Caddyfile`, and `scripts/bootstrap-caddytower.sh` to the VPS.
     - Set `CADDYTOWER_IMAGE`, HTTPS `CADDYTOWER_PUBLIC_BASE_URL`, and `CADDYTOWER_ROOT_DOMAIN` in `caddytower.env`.
 
 2. **Boot CaddyTower beside the current stack**
    - Run `./scripts/bootstrap-caddytower.sh /opt/caddytower`.
-   - Confirm the `caddytower` container joins the existing `edge` network.
-   - Keep the current `shared-caddy` container and `Caddyfile.shared` untouched at this stage.
+   - Confirm the `caddytower` container joins the `edge` network.
+   - If `shared-caddy` or `watchtower` are missing, the bootstrap script starts bundled replacements automatically.
+   - If you already have a live `shared-caddy` stack, keep it untouched at this stage.
 
 3. **Tunnel in and finish first-time setup**
    - Open an SSH tunnel to `127.0.0.1:8080`.
