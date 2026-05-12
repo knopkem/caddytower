@@ -3,10 +3,13 @@ package projects
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"caddytower/internal/caddyadmin"
 	"caddytower/internal/cloudflare"
@@ -305,6 +308,188 @@ func TestStreamProjectLogsUsesContainerName(t *testing.T) {
 	}
 }
 
+func TestRuntimeSnapshotWarnsWhenMemoryIsHigh(t *testing.T) {
+	t.Parallel()
+
+	stateStore := openProjectsStore(t)
+	docker := &fakeDocker{
+		statsByName: map[string]dockerx.ContainerStatsSnapshot{
+			"caddytower-demo": {
+				ReadAt:           time.Date(2026, 5, 12, 11, 0, 0, 0, time.UTC),
+				CPUPercent:       12.5,
+				MemoryUsageBytes: 900,
+				MemoryLimitBytes: 1000,
+				MemoryPercent:    90,
+				NetworkRxBytes:   2048,
+				NetworkTxBytes:   4096,
+			},
+		},
+	}
+	svc := New(config.Config{RootDomain: "example.com"}, stateStore, nil, docker, &fakeCaddy{}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+
+	project, err := svc.CreateWebProject(context.Background(), WebProjectInput{
+		Name:         "Demo",
+		Slug:         "demo",
+		ImageRef:     "ghcr.io/example/demo:latest",
+		Subdomain:    "demo",
+		InternalPort: 3000,
+	}, "")
+	if err != nil {
+		t.Fatalf("CreateWebProject() error = %v", err)
+	}
+
+	snapshot, err := svc.RuntimeSnapshot(context.Background(), project)
+	if err != nil {
+		t.Fatalf("RuntimeSnapshot() error = %v", err)
+	}
+	if snapshot.MemoryPercent != 90 {
+		t.Fatalf("MemoryPercent = %d", snapshot.MemoryPercent)
+	}
+	if len(snapshot.Warnings) == 0 || !strings.Contains(snapshot.Warnings[0], "Memory usage is close") {
+		t.Fatalf("warnings = %#v", snapshot.Warnings)
+	}
+}
+
+func TestCreateWebProjectStoresDeployHistoryAndRollbackPin(t *testing.T) {
+	t.Parallel()
+
+	stateStore := openProjectsStore(t)
+	docker := &fakeDocker{}
+	caddy := &fakeCaddy{}
+	svc := New(config.Config{RootDomain: "example.com"}, stateStore, nil, docker, caddy, slog.New(slog.NewTextHandler(io.Discard, nil)))
+
+	project, err := svc.CreateWebProject(context.Background(), WebProjectInput{
+		Name:         "Demo",
+		Slug:         "demo",
+		ImageRef:     "ghcr.io/example/demo:latest",
+		Subdomain:    "demo",
+		InternalPort: 3000,
+	}, "")
+	if err != nil {
+		t.Fatalf("CreateWebProject() error = %v", err)
+	}
+	if len(project.Deploys) != 1 {
+		t.Fatalf("deploys = %#v", project.Deploys)
+	}
+	if project.Deploys[0].Status != "live" || project.Deploys[0].ImageDigest == "" {
+		t.Fatalf("deploy = %#v", project.Deploys[0])
+	}
+
+	rolledBack, err := svc.RollbackProject(context.Background(), project.ID, project.Deploys[0].ID, "")
+	if err != nil {
+		t.Fatalf("RollbackProject() error = %v", err)
+	}
+	if docker.lastSpec.Image != project.Deploys[0].ImageDigest {
+		t.Fatalf("rollback image = %q, want %q", docker.lastSpec.Image, project.Deploys[0].ImageDigest)
+	}
+	if len(rolledBack.Deploys) < 2 || rolledBack.Deploys[0].Trigger != "rollback" {
+		t.Fatalf("rollback deploys = %#v", rolledBack.Deploys)
+	}
+}
+
+func TestAddAndVerifyProjectDomain(t *testing.T) {
+	t.Parallel()
+
+	stateStore := openProjectsStore(t)
+	docker := &fakeDocker{}
+	caddy := &fakeCaddy{}
+	svc := New(config.Config{RootDomain: "example.com"}, stateStore, nil, docker, caddy, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	svc.lookupCNAME = func(context.Context, string) (string, error) {
+		return "origin.example.com.", nil
+	}
+	svc.lookupHost = func(context.Context, string) ([]string, error) {
+		return []string{"203.0.113.10"}, nil
+	}
+
+	if err := svc.SaveSettings(context.Background(), SettingsInput{
+		RootDomain:     "example.com",
+		OriginHostname: "origin.example.com",
+	}, ""); err != nil {
+		t.Fatalf("SaveSettings() error = %v", err)
+	}
+
+	project, err := svc.CreateWebProject(context.Background(), WebProjectInput{
+		Name:         "Demo",
+		Slug:         "demo",
+		ImageRef:     "ghcr.io/example/demo:latest",
+		Subdomain:    "demo",
+		InternalPort: 3000,
+	}, "")
+	if err != nil {
+		t.Fatalf("CreateWebProject() error = %v", err)
+	}
+
+	project, err = svc.AddProjectDomain(context.Background(), project.ID, "app.example.org", true, "")
+	if err != nil {
+		t.Fatalf("AddProjectDomain() error = %v", err)
+	}
+	if len(project.CustomDomains) != 1 || project.PrimaryDomain != "app.example.org" {
+		t.Fatalf("project domains = %#v / primary=%q", project.CustomDomains, project.PrimaryDomain)
+	}
+	if len(caddy.managedHosts) != 2 {
+		t.Fatalf("managed hosts = %#v", caddy.managedHosts)
+	}
+
+	project, err = svc.VerifyProjectDomain(context.Background(), project.ID, project.CustomDomains[0].ID, "")
+	if err != nil {
+		t.Fatalf("VerifyProjectDomain() error = %v", err)
+	}
+	if project.CustomDomains[0].DNSVerifiedAt.IsZero() {
+		t.Fatalf("verified domain = %#v", project.CustomDomains[0])
+	}
+}
+
+func TestRedeployHealthCheckFailureAutoRollsBack(t *testing.T) {
+	t.Parallel()
+
+	stateStore := openProjectsStore(t)
+	docker := &fakeDocker{}
+	caddy := &fakeCaddy{}
+	svc := New(config.Config{RootDomain: "example.com"}, stateStore, nil, docker, caddy, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	svc.checkHTTP = func(context.Context, string, time.Duration) error { return nil }
+
+	project, err := svc.CreateWebProject(context.Background(), WebProjectInput{
+		Name:                      "Demo",
+		Slug:                      "demo",
+		ImageRef:                  "ghcr.io/example/demo:latest",
+		Subdomain:                 "demo",
+		InternalPort:              3000,
+		HealthCheckPath:           "/ready",
+		HealthCheckTimeoutSeconds: 2,
+	}, "")
+	if err != nil {
+		t.Fatalf("CreateWebProject() error = %v", err)
+	}
+	initialPin := project.Deploys[0].ImageDigest
+
+	attempts := 0
+	svc.checkHTTP = func(context.Context, string, time.Duration) error {
+		attempts++
+		if attempts <= 3 {
+			return errors.New("boom")
+		}
+		return nil
+	}
+	redeployed, err := svc.RedeployProject(context.Background(), project.ID, "")
+	if err == nil || !strings.Contains(err.Error(), "automatically rolled back") {
+		t.Fatalf("RedeployProject() error = %v, want auto-rollback failure", err)
+	}
+
+	current, _, getErr := svc.GetProject(context.Background(), project.ID)
+	if getErr != nil {
+		t.Fatalf("GetProject() error = %v", getErr)
+	}
+	if current.ImageRef != initialPin {
+		t.Fatalf("current.ImageRef = %q, want %q", current.ImageRef, initialPin)
+	}
+	if len(current.Deploys) < 3 || current.Deploys[0].Trigger != "auto-rollback" {
+		t.Fatalf("deploy history = %#v", current.Deploys)
+	}
+	if redeployed.ID != "" {
+		t.Fatalf("redeployed = %#v, want zero value on failure", redeployed)
+	}
+}
+
 func TestAdoptExistingImportsWebContainer(t *testing.T) {
 	t.Parallel()
 
@@ -370,6 +555,7 @@ type fakeDocker struct {
 	logContent    string
 	containers    []dockerx.ContainerSummary
 	inspectByName map[string]dockerx.ContainerInspect
+	statsByName   map[string]dockerx.ContainerStatsSnapshot
 }
 
 func (f *fakeDocker) PullImage(context.Context, string) error { return nil }
@@ -380,6 +566,7 @@ func (f *fakeDocker) RecreateContainer(_ context.Context, spec dockerx.Container
 		ID:      uuid.NewString(),
 		Name:    spec.Name,
 		Image:   spec.Image,
+		ImageID: "sha256:fake-image-" + strconv.Itoa(f.recreateCount),
 		Running: true,
 	}, nil
 }
@@ -388,6 +575,12 @@ func (f *fakeDocker) InspectContainer(_ context.Context, name string) (dockerx.C
 		return inspect, nil
 	}
 	return dockerx.ContainerInspect{Running: true}, nil
+}
+func (f *fakeDocker) ContainerStats(_ context.Context, name string) (dockerx.ContainerStatsSnapshot, error) {
+	if stats, ok := f.statsByName[name]; ok {
+		return stats, nil
+	}
+	return dockerx.ContainerStatsSnapshot{}, nil
 }
 func (f *fakeDocker) ListContainersByLabel(context.Context, string, string) ([]dockerx.ContainerSummary, error) {
 	return nil, nil

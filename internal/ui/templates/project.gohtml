@@ -8,83 +8,239 @@
     <meta name="color-scheme" content="dark light">
     <link rel="stylesheet" href="/assets/app.css">
   </head>
-  <body hx-boost="true" hx-select="#app" hx-target="#app" hx-swap="outerHTML transition:true">
+  <body hx-boost="true" hx-select="#app" hx-target="#app" hx-swap="outerHTML">
     <div id="page-loader" class="page-loader" aria-hidden="true"></div>
     <main id="app" class="shell">
       <header class="page-header compact">
         <div>
           <p class="brand-pill">CaddyTower</p>
           <h1>{{if .Headline}}{{.Headline}}{{else}}Project settings{{end}}</h1>
-          <p class="lede">Update this project and reapply it to Docker, networking, and public routing where applicable.</p>
+          <p class="lede">Operate this app from one page: deploys, domains, env, databases, and live status.</p>
         </div>
         <div class="toolbar-actions">
+          <a class="button-link secondary" href="/settings">Settings</a>
           <a class="button-link secondary" href="/">Back to dashboard</a>
           <span class="status-pill">{{.ProjectMeta.Status}}</span>
         </div>
       </header>
 
-      {{if .ErrorMessage}}<p class="alert" role="alert">{{.ErrorMessage}}</p>{{end}}
+      {{template "error-callout" .}}
       {{if .InfoMessage}}<p class="notice" role="status">{{.InfoMessage}}</p>{{end}}
 
-      <section class="page-grid sidebar">
+      {{if .PendingImage}}
+      <section class="card hero-card">
+        <div class="card-header">
+          <div class="card-title">
+            <h2>Waiting for the first image</h2>
+            <p>{{.PendingImageHint}}</p>
+          </div>
+          <span class="pill">pending image</span>
+        </div>
+        <div class="summary-grid">
+          <article class="summary-card">
+            <h3>Current image ref</h3>
+            <p class="mono">{{.ProjectMeta.ImageRef}}</p>
+          </article>
+          <article class="summary-card">
+            <h3>Deploy webhook</h3>
+            <p class="mono">{{.WebhookURL}}</p>
+          </article>
+          <article class="summary-card">
+            <h3>Next step</h3>
+            <p>Push to GitHub or trigger your GHCR workflow, then CaddyTower will move this project out of pending state.</p>
+          </article>
+        </div>
+      </section>
+      {{end}}
+
+      <section class="page-grid two-up">
         <article class="card">
           <div class="card-header">
             <div class="card-title">
-              <h2>Project details</h2>
-              <p class="panel-copy">Edit the image, routing, ports, and runtime environment for this project.</p>
+              <h2>Project overview</h2>
+              <p class="panel-copy">Fast links and the values you most often sanity-check after a deploy.</p>
             </div>
-            <details class="help">
-              <summary>Help</summary>
-              <div class="help-body">
-                <p>Changing these values updates the stored configuration and then reapplies the project to Docker, networking, and web routing where applicable.</p>
-                <p>Web projects care about subdomains and internal ports, while TCP/UDP projects care about published host ports.</p>
-              </div>
-            </details>
+            <span class="pill">{{.ProjectMeta.Type}}</span>
           </div>
-          <form method="post" action="{{.Project.Action}}" class="stack section-spacer">
+          <dl class="stats section-spacer">
+            <div><dt>Primary URL</dt><dd>{{if .PrimaryDomain}}<a href="https://{{.PrimaryDomain}}" target="_blank" rel="noreferrer">{{.PrimaryDomain}}</a>{{else}}n/a{{end}}</dd></div>
+            <div><dt>Generated domain</dt><dd>{{if .GeneratedDomain}}{{.GeneratedDomain}}{{else}}n/a{{end}}</dd></div>
+            <div><dt>Container</dt><dd class="mono">{{.ProjectMeta.ContainerName}}</dd></div>
+            <div><dt>Image</dt><dd class="mono">{{.ProjectMeta.ImageRef}}</dd></div>
+            <div><dt>Health check</dt><dd>{{if .HealthCheckTarget}}<span class="mono">{{.HealthCheckTarget}}</span>{{else}}Disabled{{end}}</dd></div>
+          </dl>
+          <div class="section-spacer">
+            <div class="card-header flush">
+              <div class="card-title">
+                <h3>Runtime snapshot</h3>
+                <p class="panel-copy">{{if .Runtime.LastChecked}}Last sample {{.Runtime.LastChecked}}{{else}}Most recent container sample{{end}}</p>
+              </div>
+              <span class="pill">{{.Runtime.Status}}</span>
+            </div>
+            {{if .Runtime.ErrorMessage}}
+            <div class="empty-state section-spacer">
+              <p><strong>{{.Runtime.ErrorMessage}}</strong></p>
+              <p>Logs and deploy history still work. Try refreshing after the container has started again.</p>
+            </div>
+            {{else}}
+            <div class="summary-grid">
+              <article class="summary-card">
+                <h3>CPU</h3>
+                <p>{{.Runtime.CPUSummary}}</p>
+              </article>
+              <article class="summary-card">
+                <h3>Memory</h3>
+                <p>{{.Runtime.MemorySummary}}</p>
+              </article>
+              <article class="summary-card">
+                <h3>Network</h3>
+                <p>{{.Runtime.NetworkSummary}}</p>
+              </article>
+              <article class="summary-card">
+                <h3>Disk I/O</h3>
+                <p>{{.Runtime.BlockIOSummary}}</p>
+              </article>
+              <article class="summary-card">
+                <h3>Processes</h3>
+                <p>{{.Runtime.ProcessSummary}}</p>
+              </article>
+            </div>
+            {{if gt .Runtime.MemoryUsedPct 0}}
+            <div class="meter-stack">
+              <div>
+                <div class="meter-label">
+                  <span>Memory headroom</span>
+                  <span>{{.Runtime.MemoryUsedPct}}% used</span>
+                </div>
+                <meter min="0" max="100" value="{{.Runtime.MemoryUsedPct}}">{{.Runtime.MemoryUsedPct}}</meter>
+              </div>
+            </div>
+            {{end}}
+            {{if .Runtime.Warnings}}
+            <div class="warning-list">
+              {{range .Runtime.Warnings}}<p>{{.}}</p>{{end}}
+            </div>
+            {{end}}
+            {{end}}
+          </div>
+          <div class="actions section-spacer">
+            {{if .PrimaryDomain}}<a class="button-link" href="https://{{.PrimaryDomain}}" target="_blank" rel="noreferrer">Open app</a><span class="pill">{{.Runtime.OpenAppStatus}}</span>{{end}}
+            <form method="post" action="/projects/{{.Project.ID}}/deploy">
+              <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+              <button type="submit" class="secondary">Redeploy</button>
+            </form>
+            <form method="post" action="/projects/{{.Project.ID}}/delete" data-confirm-dialog="project-delete-dialog" data-confirm-title="Delete {{.Project.Name}}?" data-confirm-body="CaddyTower will remove the managed container, generated routing, custom domains, and shared attachments for this project, then return you to the dashboard." data-confirm-confirm-label="Delete project" data-confirm-progress-label="Deleting project…">
+              <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+              <button type="submit" class="danger">Delete project</button>
+            </form>
+          </div>
+        </article>
+
+        <article class="card">
+          <div class="card-header">
+            <div class="card-title">
+              <h2>Deploy automation</h2>
+              <p class="panel-copy">Webhook details for GitHub Actions and manual redeploys.</p>
+            </div>
+          </div>
+          <dl class="kv section-spacer">
+            <div><dt>Deploy webhook</dt><dd class="mono">{{.WebhookURL}}</dd></div>
+            <div><dt>Webhook secret</dt><dd class="mono">{{.WebhookSecret}}</dd></div>
+            {{if .WorkflowSecretName}}<div><dt>GitHub secret name</dt><dd class="mono">{{.WorkflowSecretName}}</dd></div>{{end}}
+          </dl>
+          {{if .WorkflowSnippet}}
+          <div class="section-spacer">
+            <h3>GitHub Actions step</h3>
+            <p class="panel-copy">Add repo secret <span class="inline-code">{{.WorkflowSecretName}}</span> with the webhook secret above, then paste this after your GHCR push step.</p>
+            <pre class="code-block">{{.WorkflowSnippet}}</pre>
+          </div>
+          {{end}}
+        </article>
+      </section>
+
+      <section class="page-grid sidebar section-spacer">
+        <article class="card">
+          <div class="card-header">
+            <div class="card-title">
+              <h2>Configuration</h2>
+              <p class="panel-copy">Edit the image, routing, and runtime environment for this project.</p>
+            </div>
+          </div>
+          <form method="post" action="{{.Project.Action}}" class="stack section-spacer" data-image-check-form>
             <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
             <input type="hidden" name="project_type" value="{{.Project.Type}}">
-            <label class="field">
-              <span>Project type</span>
-              <input type="text" value="{{.Project.Type}}" readonly>
-            </label>
-            <label class="field">
-              <span>Name</span>
-              <input type="text" name="name" value="{{.Project.Name}}" required>
-            </label>
-            <label class="field">
-              <span>Slug</span>
-              <input type="text" name="slug" value="{{.Project.Slug}}" {{if .Project.SlugReadOnly}}readonly{{end}}>
-            </label>
+            <div class="grid two">
+              <label class="field">
+                <span>Project type</span>
+                <input type="text" value="{{.Project.Type}}" readonly>
+              </label>
+              <label class="field">
+                <span>Slug</span>
+                <input type="text" name="slug" value="{{.Project.Slug}}" {{if .Project.SlugReadOnly}}readonly{{end}}>
+              </label>
+            </div>
+            <div class="grid two">
+              <label class="field">
+                <span>Name</span>
+                <input type="text" name="name" value="{{.Project.Name}}" required>
+              </label>
+              <label class="field">
+                <span>Generated subdomain</span>
+                <input type="text" name="subdomain" value="{{.Project.Subdomain}}">
+              </label>
+            </div>
             <label class="field">
               <span>Image reference</span>
               <input type="text" name="image_ref" value="{{.Project.ImageRef}}" required>
+              <small class="field-hint">CaddyTower checks public registry access before you save.</small>
+              <p class="input-status" data-image-check-status aria-live="polite"></p>
             </label>
-            <fieldset>
-              <legend>Routing</legend>
-              <div class="stack">
-                <label class="field">
-                  <span>Subdomain (web only)</span>
-                  <input type="text" name="subdomain" value="{{.Project.Subdomain}}">
-                </label>
-                <label class="field">
-                  <span>Internal port (web only)</span>
-                  <input type="number" name="internal_port" min="1" max="65535" value="{{.Project.InternalPort}}">
-                </label>
-                <label class="field">
-                  <span>Published ports (TCP/UDP only)</span>
-                  <textarea name="port_mappings" rows="4" placeholder="25565:25565&#10;8081:8080">{{.Project.PortMappingsText}}</textarea>
-                </label>
-              </div>
-            </fieldset>
+            <div class="grid two">
+              <label class="field">
+                <span>Internal port (web only)</span>
+                <input type="number" name="internal_port" min="1" max="65535" value="{{.Project.InternalPort}}">
+              </label>
+              <label class="field">
+                <span>Published ports (TCP/UDP only)</span>
+                <textarea name="port_mappings" rows="4" placeholder="25565:25565&#10;8081:8080">{{.Project.PortMappingsText}}</textarea>
+              </label>
+            </div>
+            <div class="grid two">
+              <label class="field">
+                <span>Health check path</span>
+                <input type="text" name="health_check_path" value="{{.Project.HealthCheckPath}}" placeholder="/health or /ready">
+                <small class="field-hint">Optional. When set, CaddyTower waits for this HTTP path to pass before marking the deploy live.</small>
+              </label>
+              <label class="field">
+                <span>Health timeout (seconds)</span>
+                <input type="number" name="health_timeout_seconds" min="1" max="30" value="{{.Project.HealthCheckTimeoutSeconds}}">
+                <small class="field-hint">Used per attempt. CaddyTower retries health checks three times before failing the deploy.</small>
+              </label>
+            </div>
             <label class="checkbox">
               <input type="checkbox" name="watchtower_enabled" {{if .Project.WatchtowerEnabled}}checked{{end}}>
               <span>Enable Watchtower updates</span>
             </label>
-            <label class="field">
-              <span>Environment variables</span>
-              <textarea name="env_text" rows="10">{{.Project.EnvText}}</textarea>
-            </label>
+            <div class="stack">
+              <div class="card-header flush">
+                <div class="card-title">
+                  <h3>Environment</h3>
+                  <p class="panel-copy">Edit variables inline or paste a full <span class="inline-code">.env</span> block. Sensitive values are masked in the summary card.</p>
+                </div>
+              </div>
+              <div class="stack" data-env-editor>
+                <div class="env-editor-list" data-env-editor-rows></div>
+                <div class="actions">
+                  <button type="button" class="secondary" data-env-editor-add>Add variable</button>
+                </div>
+                <details class="help">
+                  <summary>Paste or edit raw <span class="inline-code">.env</span></summary>
+                  <div class="help-body">
+                    <textarea name="env_text" rows="12" data-env-editor-text>{{.Project.EnvText}}</textarea>
+                  </div>
+                </details>
+              </div>
+            </div>
             <button type="submit">{{.Project.SubmitLabel}}</button>
           </form>
         </article>
@@ -92,37 +248,152 @@
         <article class="card">
           <div class="card-header">
             <div class="card-title">
-              <h2>Deploy metadata</h2>
-              <p class="panel-copy">Useful values for operations, debugging, and CI webhooks.</p>
+              <h2>Environment summary</h2>
+              <p class="panel-copy">Stored runtime values with sensitive keys masked by default.</p>
             </div>
-            <span class="pill">{{.ProjectMeta.Type}}</span>
           </div>
-          <dl class="kv section-spacer">
-            <div><dt>Public URL</dt><dd>{{if .ProjectMeta.FullDomain}}{{.ProjectMeta.FullDomain}}{{else}}n/a{{end}}</dd></div>
-            <div><dt>Published ports</dt><dd>{{if .ProjectMeta.PortMappingsText}}{{.ProjectMeta.PortMappingsText}}{{else}}n/a{{end}}</dd></div>
-            <div><dt>Container</dt><dd class="mono">{{.ProjectMeta.ContainerName}}</dd></div>
-            <div><dt>Status</dt><dd>{{.ProjectMeta.Status}}</dd></div>
-            <div><dt>Image</dt><dd class="mono">{{.ProjectMeta.ImageRef}}</dd></div>
-            <div><dt>Deploy webhook</dt><dd class="mono">{{.WebhookURL}}</dd></div>
-          </dl>
-          <div class="section-spacer">
-            <details class="help">
-              <summary>Webhook secret</summary>
-              <div class="help-body">
-                <p class="mono">{{.WebhookSecret}}</p>
+          {{if .EnvItems}}
+          <div class="stack section-spacer">
+            {{range .EnvItems}}
+            <article class="subcard">
+              <dl class="kv compact-kv">
+                <div><dt>Key</dt><dd class="mono">{{.Key}}</dd></div>
+                <div><dt>Value</dt><dd class="mono">{{.MaskedValue}}</dd></div>
+              </dl>
+            </article>
+            {{end}}
+          </div>
+          {{else}}
+          <div class="empty-state section-spacer">
+            <p><strong>No custom environment variables yet.</strong></p>
+            <p>Paste a <span class="inline-code">.env</span> block in the editor to add runtime values.</p>
+          </div>
+          {{end}}
+        </article>
+      </section>
+
+      <section class="page-grid two-up section-spacer">
+        <article class="card">
+          <div class="card-header">
+            <div class="card-title">
+              <h2>Domains</h2>
+              <p class="panel-copy">The generated subdomain is managed automatically. Add custom hostnames here and verify their DNS.</p>
+            </div>
+          </div>
+          <div class="summary-grid section-spacer">
+            <article class="summary-card">
+              <h3>Generated domain</h3>
+              <p>{{if .GeneratedDomain}}<a href="https://{{.GeneratedDomain}}" target="_blank" rel="noreferrer">{{.GeneratedDomain}}</a>{{else}}n/a{{end}}</p>
+            </article>
+            <article class="summary-card">
+              <h3>Expected DNS target</h3>
+              <p class="mono">{{if .ExpectedDomainDNS}}{{.ExpectedDomainDNS}}{{else}}Configure an origin hostname in Settings{{end}}</p>
+            </article>
+          </div>
+          <form method="post" action="/projects/{{.Project.ID}}/domains" class="stack section-spacer">
+            <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+            <label class="field">
+              <span>Custom hostname</span>
+              <input type="text" name="hostname" value="{{.DomainForm.Hostname}}" placeholder="app.example.org" required>
+            </label>
+            <label class="checkbox">
+              <input type="checkbox" name="is_primary" {{if .DomainForm.MakePrimary}}checked{{end}}>
+              <span>Use as the primary “Open app” domain</span>
+            </label>
+            <button type="submit">Add custom domain</button>
+          </form>
+        </article>
+
+        <article class="card">
+          <div class="card-header">
+            <div class="card-title">
+              <h2>Custom domain list</h2>
+              <p class="panel-copy">Verification checks whether the hostname points at the expected origin target.</p>
+            </div>
+          </div>
+          {{if .Domains}}
+          <div class="stack section-spacer">
+            {{range .Domains}}
+            <article class="subcard">
+              <div class="card-header">
+                <div class="card-title">
+                  <h3>{{.Hostname}}</h3>
+                  <p>{{if .DNSVerified}}Verified {{.DNSVerifiedAt}}{{else}}Not verified yet{{end}}</p>
+                </div>
+                {{if .IsPrimary}}<span class="pill">primary</span>{{end}}
               </div>
-            </details>
+              <div class="actions">
+                <form method="post" action="/projects/{{$.Project.ID}}/domains/{{.ID}}/verify">
+                  <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+                  <button type="submit" class="secondary">Verify DNS</button>
+                </form>
+                <form method="post" action="/projects/{{$.Project.ID}}/domains/{{.ID}}/delete" data-confirm-dialog="project-action-dialog" data-confirm-title="Remove {{.Hostname}}?" data-confirm-body="CaddyTower will stop routing this custom hostname for the project, but the generated domain stays in place." data-confirm-confirm-label="Remove domain" data-confirm-progress-label="Removing domain…">
+                  <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+                  <button type="submit" class="danger">Remove</button>
+                </form>
+              </div>
+            </article>
+            {{end}}
           </div>
-          <div class="actions stacked section-spacer">
-            <form method="post" action="/projects/{{.Project.ID}}/deploy">
-              <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
-              <button type="submit" class="secondary full-width">Redeploy</button>
-            </form>
-            <form method="post" action="/projects/{{.Project.ID}}/delete" hx-confirm="Delete this project and its managed resources?">
-              <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
-              <button type="submit" class="danger full-width">Delete project</button>
-            </form>
+          {{else}}
+          <div class="empty-state section-spacer">
+            <p><strong>No custom domains yet.</strong></p>
+            <p>Add one if you want the app to answer on a hostname outside the generated subdomain.</p>
           </div>
+          {{end}}
+        </article>
+      </section>
+
+      <section class="page-grid two-up section-spacer">
+        <article class="card">
+          <div class="card-header">
+            <div class="card-title">
+              <h2>Deploy history</h2>
+              <p class="panel-copy">Recent deploys and rollbacks for this project.</p>
+            </div>
+          </div>
+          {{if .Deploys}}
+          <div class="stack section-spacer">
+            {{range .Deploys}}
+            <article class="subcard">
+              <div class="card-header">
+                <div class="card-title">
+                  <h3>{{.Status}}</h3>
+                  <p>{{.StartedAt}}{{if .FinishedAt}} · finished {{.FinishedAt}}{{end}}</p>
+                </div>
+                <span class="pill">{{.Trigger}}</span>
+              </div>
+              <dl class="kv compact-kv">
+                <div><dt>Image ref</dt><dd class="mono">{{.ImageRef}}</dd></div>
+                {{if .ImageDigest}}<div><dt>Image pin</dt><dd class="mono">{{.ImageDigest}}</dd></div>{{end}}
+                {{if .Actor}}<div><dt>Actor</dt><dd>{{.Actor}}</dd></div>{{end}}
+                {{if .Error}}<div><dt>Error</dt><dd>{{.Error}}</dd></div>{{end}}
+              </dl>
+              {{if .CanRollback}}
+              <form method="post" action="/projects/{{$.Project.ID}}/deploys/{{.ID}}/rollback" class="section-spacer">
+                <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+                <button type="submit" class="secondary">Rollback to this image</button>
+              </form>
+              {{end}}
+            </article>
+            {{end}}
+          </div>
+          {{else}}
+          <div class="empty-state section-spacer">
+            <p><strong>No deploy history yet.</strong></p>
+            <p>The next deploy will show up here with its image reference and rollback pin.</p>
+          </div>
+          {{end}}
+        </article>
+
+        <article class="card">
+          <div class="card-header">
+            <div class="card-title">
+              <h2>Live deploy events</h2>
+              <p class="panel-copy">Deployment progress from pull to live status.</p>
+            </div>
+          </div>
+          <pre class="log-output section-spacer" data-event-stream data-empty-message="Waiting for the next deploy…" data-events-url="{{.DeployEventsURL}}">Waiting for the next deploy…</pre>
         </article>
       </section>
 
@@ -133,12 +404,6 @@
               <h2>Attach shared database</h2>
               <p class="panel-copy">Provision a managed Postgres or MariaDB database and inject its connection string into the container runtime.</p>
             </div>
-            <details class="help">
-              <summary>Help</summary>
-              <div class="help-body">
-                <p>CaddyTower provisions a database and user inside the shared engine, stores the password securely, and injects the connection string into the chosen project environment variable.</p>
-              </div>
-            </details>
           </div>
           <form method="post" action="/projects/{{.Project.ID}}/databases" class="stack section-spacer">
             <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
@@ -168,7 +433,7 @@
           <div class="stack section-spacer">
             {{range .Attachments}}
             <article class="subcard">
-              <dl class="kv">
+              <dl class="kv compact-kv">
                 <div><dt>Engine</dt><dd>{{.Engine}}</dd></div>
                 <div><dt>Env var</dt><dd class="mono">{{.EnvVarName}}</dd></div>
                 <div><dt>Database</dt><dd class="mono">{{.DBName}}</dd></div>
@@ -186,7 +451,7 @@
                   <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
                   <button type="submit" class="secondary">Rotate password</button>
                 </form>
-                <form method="post" action="/projects/{{$.Project.ID}}/databases/{{.ID}}/delete" hx-confirm="Detach this shared database from the project?">
+                <form method="post" action="/projects/{{$.Project.ID}}/databases/{{.ID}}/delete" data-confirm-dialog="project-action-dialog" data-confirm-title="Detach {{.DBName}}?" data-confirm-body="CaddyTower will remove this shared database attachment from the project and redeploy it without that connection string." data-confirm-confirm-label="Detach database" data-confirm-progress-label="Detaching database…">
                   <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
                   <button type="submit" class="danger">Detach database</button>
                 </form>
@@ -210,8 +475,47 @@
             <p class="panel-copy">Streaming recent container logs for this project.</p>
           </div>
         </div>
-        <pre class="log-output section-spacer" data-log-stream data-logs-url="/projects/{{.Project.ID}}/logs/stream?tail=200">Connecting to log stream...</pre>
+        <pre class="log-output section-spacer" data-log-stream data-empty-message="Connecting to log stream…" data-logs-url="/projects/{{.Project.ID}}/logs/stream?tail=200">Connecting to log stream…</pre>
       </section>
+
+      <dialog id="project-delete-dialog" class="wizard-dialog">
+        <article class="dialog-card dialog-card-danger">
+          <div class="section-header">
+            <div class="section-title">
+              <h2 data-confirm-title>Delete project?</h2>
+              <p data-confirm-body>This removes the managed container, routes, and related resources from CaddyTower.</p>
+            </div>
+            <button type="button" class="secondary" data-confirm-cancel>Cancel</button>
+          </div>
+          <div class="hint-list">
+            <p>Delete is best for retired apps or test deploys you no longer want CaddyTower to manage.</p>
+            <p>If you only need a fresh rollout, use redeploy or rollback instead so the project stays reachable.</p>
+          </div>
+          <div class="actions section-spacer">
+            <button type="button" class="secondary" data-confirm-cancel>Keep project</button>
+            <button type="button" class="danger" data-confirm-submit>Delete project</button>
+          </div>
+        </article>
+      </dialog>
+
+      <dialog id="project-action-dialog" class="wizard-dialog">
+        <article class="dialog-card dialog-card-danger">
+          <div class="section-header">
+            <div class="section-title">
+              <h2 data-confirm-title>Confirm action</h2>
+              <p data-confirm-body>This change updates the project immediately.</p>
+            </div>
+            <button type="button" class="secondary" data-confirm-cancel>Cancel</button>
+          </div>
+          <div class="hint-list">
+            <p>Use this for shared resources you want CaddyTower to stop managing for the app.</p>
+          </div>
+          <div class="actions section-spacer">
+            <button type="button" class="secondary" data-confirm-cancel>Cancel</button>
+            <button type="button" class="danger" data-confirm-submit>Continue</button>
+          </div>
+        </article>
+      </dialog>
     </main>
     <script defer src="/assets/vendor/htmx.min.js"></script>
     <script defer src="/assets/app.js"></script>

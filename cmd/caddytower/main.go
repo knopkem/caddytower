@@ -15,6 +15,7 @@ import (
 	"caddytower/internal/caddyadmin"
 	"caddytower/internal/config"
 	"caddytower/internal/dockerx"
+	githubapp "caddytower/internal/github"
 	"caddytower/internal/monitor"
 	"caddytower/internal/projects"
 	"caddytower/internal/secrets"
@@ -68,13 +69,24 @@ func main() {
 		os.Exit(1)
 	}
 	projectService := projects.New(cfg, stateStore, secretService, dockerService, caddyService, logger)
+	var githubService *githubapp.Service
+	if cfg.GitHubConfigured() {
+		githubService = githubapp.New(githubapp.Config{
+			AppID:          cfg.GitHubAppID,
+			AppSlug:        cfg.GitHubAppSlug,
+			PrivateKeyPath: cfg.GitHubAppPrivateKeyPath,
+			WebhookSecret:  cfg.GitHubWebhookSecret,
+			APIBaseURL:     cfg.GitHubAPIBaseURL,
+			WebBaseURL:     cfg.GitHubWebBaseURL,
+		}, stateStore, nil)
+	}
 	var backupService *backups.Service
 	if cfg.BackupsEnabled {
 		backupService = backups.New(cfg, stateStore, secretService, dockerService, logger)
 	}
 	monitorService := monitor.New(cfg, logger)
 
-	app := server.New(cfg, webUI, logger, version.Current(), stateStore, authService, projectService, backupService, monitorService)
+	app := server.New(cfg, webUI, logger, version.Current(), stateStore, authService, projectService, githubService, backupService, monitorService)
 
 	srv := &http.Server{
 		Addr:              cfg.HTTPAddr,

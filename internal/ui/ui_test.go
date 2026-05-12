@@ -44,10 +44,44 @@ func TestRenderHome(t *testing.T) {
 	if !strings.Contains(body, "Scaffold ready") {
 		t.Fatalf("rendered body missing heading: %q", body)
 	}
-	if !strings.Contains(body, "http://shared-caddy:2019") {
-		t.Fatalf("rendered body missing caddy admin url: %q", body)
+	if !strings.Contains(body, "Ship Docker projects behind shared Caddy") {
+		t.Fatalf("rendered body missing project-first lede: %q", body)
 	}
 	if !strings.Contains(body, "/assets/vendor/htmx.min.js") || strings.Contains(body, "/assets/vendor/pico.classless.min.css") {
 		t.Fatalf("rendered body has unexpected ui assets: %q", body)
+	}
+}
+
+func TestRenderSettings(t *testing.T) {
+	t.Parallel()
+
+	webUI, err := New()
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	var buf bytes.Buffer
+	err = webUI.Render(&buf, "settings.gohtml", SettingsPageData{
+		PageTitle: "CaddyTower | Settings",
+		Headline:  "Settings and operations",
+		Config: ConfigSummary{
+			HTTPAddr:      ":8080",
+			PublicBaseURL: "http://localhost:8080",
+			DataDir:       "/var/lib/caddytower",
+			StateDBPath:   "/var/lib/caddytower/state.db",
+			CaddyAdminURL: "http://shared-caddy:2019",
+			MasterKeySet:  true,
+		},
+	})
+	if err != nil {
+		t.Fatalf("Render() error = %v", err)
+	}
+
+	body := buf.String()
+	if !strings.Contains(body, "Deployment settings") {
+		t.Fatalf("rendered settings missing deployment heading: %q", body)
+	}
+	if !strings.Contains(body, "http://shared-caddy:2019") {
+		t.Fatalf("rendered settings missing caddy admin url: %q", body)
 	}
 }

@@ -36,6 +36,9 @@ func TestOpenAppliesMigrations(t *testing.T) {
 		"project_volumes",
 		"project_ports",
 		"project_db_attachments",
+		"project_domains",
+		"project_deploys",
+		"github_installations",
 		"audit_log",
 	} {
 		exists, err := TableExists(ctx, stateStore.DB(), table)

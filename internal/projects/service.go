@@ -6,11 +6,14 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
+	"net/http"
 	"net/url"
 	"regexp"
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"caddytower/internal/caddyadmin"
@@ -42,6 +45,7 @@ type dockerService interface {
 	PullImage(context.Context, string) error
 	RecreateContainer(context.Context, dockerx.ContainerSpec) (dockerx.ContainerInspect, error)
 	InspectContainer(context.Context, string) (dockerx.ContainerInspect, error)
+	ContainerStats(context.Context, string) (dockerx.ContainerStatsSnapshot, error)
 	ListContainers(context.Context) ([]dockerx.ContainerSummary, error)
 	ListContainersByLabel(context.Context, string, string) ([]dockerx.ContainerSummary, error)
 	RemoveContainer(context.Context, string) error
@@ -76,6 +80,11 @@ type Service struct {
 	db            dbService
 	logger        *slog.Logger
 	newCloudflare func(string) (cloudflareClient, error)
+	lookupCNAME   func(context.Context, string) (string, error)
+	lookupHost    func(context.Context, string) ([]string, error)
+	checkHTTP     func(context.Context, string, time.Duration) error
+	deployMu      sync.RWMutex
+	deploySubs    map[string]map[chan DeployEvent]struct{}
 }
 
 type Settings struct {
@@ -95,24 +104,65 @@ type SettingsInput struct {
 }
 
 type Project struct {
-	ID                string
-	Name              string
-	Slug              string
-	Type              string
-	WebhookSecret     string
-	ImageRef          string
-	Subdomain         string
-	FullDomain        string
-	ContainerName     string
-	InternalPort      int
-	Ports             []ProjectPort
-	WatchtowerEnabled bool
-	Env               map[string]string
-	EnvText           string
-	CreatedAt         time.Time
-	UpdatedAt         time.Time
-	Status            string
-	DBAttachments     []DBAttachment
+	ID                        string
+	Name                      string
+	Slug                      string
+	Type                      string
+	WebhookSecret             string
+	ImageRef                  string
+	GitHubRepoFullName        string
+	GitHubInstallationID      int64
+	GitHubDefaultBranch       string
+	Subdomain                 string
+	FullDomain                string
+	ContainerName             string
+	InternalPort              int
+	Ports                     []ProjectPort
+	WatchtowerEnabled         bool
+	Env                       map[string]string
+	EnvText                   string
+	HealthCheckPath           string
+	HealthCheckTimeoutSeconds int
+	CreatedAt                 time.Time
+	UpdatedAt                 time.Time
+	Status                    string
+	PrimaryDomain             string
+	CustomDomains             []ProjectDomain
+	Deploys                   []ProjectDeploy
+	DBAttachments             []DBAttachment
+}
+
+type ProjectDomain struct {
+	ID            int64
+	Hostname      string
+	IsPrimary     bool
+	DNSVerifiedAt time.Time
+}
+
+type ProjectDeploy struct {
+	ID          int64
+	ImageDigest string
+	ImageRef    string
+	Status      string
+	Trigger     string
+	Actor       string
+	StartedAt   time.Time
+	FinishedAt  time.Time
+	Error       string
+}
+
+type DeployEvent struct {
+	ProjectID string
+	Stage     string
+	Message   string
+	Status    string
+	Timestamp time.Time
+}
+
+type projectDeployRequest struct {
+	Trigger             string
+	Actor               string
+	DisableAutoRollback bool
 }
 
 type Dashboard struct {
@@ -120,17 +170,48 @@ type Dashboard struct {
 	Projects []Project
 }
 
+type AuditLogEntry struct {
+	ID        string
+	Timestamp time.Time
+	UserEmail string
+	Action    string
+	Target    string
+	Payload   string
+}
+
+type ProjectRuntimeSnapshot struct {
+	Available        bool
+	Status           string
+	ReadAt           time.Time
+	CPUPercent       float64
+	MemoryUsageBytes uint64
+	MemoryLimitBytes uint64
+	MemoryPercent    int
+	NetworkRxBytes   uint64
+	NetworkTxBytes   uint64
+	BlockReadBytes   uint64
+	BlockWriteBytes  uint64
+	PIDs             uint64
+	Warnings         []string
+}
+
 type WebProjectInput struct {
-	Type              string
-	ID                string
-	Name              string
-	Slug              string
-	ImageRef          string
-	Subdomain         string
-	InternalPort      int
-	PortMappingsText  string
-	WatchtowerEnabled bool
-	EnvText           string
+	Type                      string
+	ID                        string
+	Name                      string
+	Slug                      string
+	ImageRef                  string
+	GitHubRepoFullName        string
+	GitHubInstallationID      int64
+	GitHubDefaultBranch       string
+	Subdomain                 string
+	InternalPort              int
+	PortMappingsText          string
+	WatchtowerEnabled         bool
+	EnvText                   string
+	HealthCheckPath           string
+	HealthCheckTimeoutSeconds int
+	SkipDeploy                bool
 }
 
 type ProjectPort struct {
@@ -164,17 +245,80 @@ type adoptRoute struct {
 }
 
 func New(cfg config.Config, stateStore *store.Store, secretService *secrets.Service, dockerSvc dockerService, caddySvc caddyService, logger *slog.Logger) *Service {
+	resolver := net.DefaultResolver
 	return &Service{
-		cfg:     cfg,
-		store:   stateStore,
-		secrets: secretService,
-		docker:  dockerSvc,
-		caddy:   caddySvc,
-		db:      dbengines.New(stateStore, secretService, dockerSvc),
-		logger:  logger,
+		cfg:         cfg,
+		store:       stateStore,
+		secrets:     secretService,
+		docker:      dockerSvc,
+		caddy:       caddySvc,
+		db:          dbengines.New(stateStore, secretService, dockerSvc),
+		logger:      logger,
+		lookupCNAME: resolver.LookupCNAME,
+		lookupHost:  resolver.LookupHost,
+		checkHTTP: func(ctx context.Context, target string, timeout time.Duration) error {
+			req, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
+			if err != nil {
+				return fmt.Errorf("build health check request: %w", err)
+			}
+			client := &http.Client{Timeout: timeout}
+			resp, err := client.Do(req)
+			if err != nil {
+				return fmt.Errorf("request health check: %w", err)
+			}
+			defer resp.Body.Close()
+			if resp.StatusCode < 200 || resp.StatusCode >= 400 {
+				return fmt.Errorf("health check returned %d", resp.StatusCode)
+			}
+			return nil
+		},
+		deploySubs: map[string]map[chan DeployEvent]struct{}{},
 		newCloudflare: func(token string) (cloudflareClient, error) {
 			return cloudflare.New(token)
 		},
+	}
+}
+
+func (s *Service) SubscribeDeployEvents(projectID string) (<-chan DeployEvent, func()) {
+	ch := make(chan DeployEvent, 16)
+
+	s.deployMu.Lock()
+	if s.deploySubs[projectID] == nil {
+		s.deploySubs[projectID] = map[chan DeployEvent]struct{}{}
+	}
+	s.deploySubs[projectID][ch] = struct{}{}
+	s.deployMu.Unlock()
+
+	cancel := func() {
+		s.deployMu.Lock()
+		defer s.deployMu.Unlock()
+		if subscribers, ok := s.deploySubs[projectID]; ok {
+			delete(subscribers, ch)
+			if len(subscribers) == 0 {
+				delete(s.deploySubs, projectID)
+			}
+		}
+		close(ch)
+	}
+	return ch, cancel
+}
+
+func (s *Service) emitDeployEvent(projectID, stage, message, status string) {
+	event := DeployEvent{
+		ProjectID: projectID,
+		Stage:     stage,
+		Message:   message,
+		Status:    status,
+		Timestamp: time.Now().UTC(),
+	}
+
+	s.deployMu.RLock()
+	defer s.deployMu.RUnlock()
+	for subscriber := range s.deploySubs[projectID] {
+		select {
+		case subscriber <- event:
+		default:
+		}
 	}
 }
 
@@ -193,6 +337,57 @@ func (s *Service) Dashboard(ctx context.Context) (Dashboard, error) {
 		Settings: settings,
 		Projects: projects,
 	}, nil
+}
+
+func (s *Service) AuditLogs(ctx context.Context, filter string, limit int) ([]AuditLogEntry, error) {
+	records, err := s.store.ListAuditLogs(ctx, filter, limit)
+	if err != nil {
+		return nil, err
+	}
+	entries := make([]AuditLogEntry, 0, len(records))
+	for _, record := range records {
+		entries = append(entries, AuditLogEntry{
+			ID:        record.ID,
+			Timestamp: record.Timestamp,
+			UserEmail: record.UserEmail,
+			Action:    record.Action,
+			Target:    record.Target,
+			Payload:   record.Payload,
+		})
+	}
+	return entries, nil
+}
+
+func (s *Service) RuntimeSnapshot(ctx context.Context, project Project) (ProjectRuntimeSnapshot, error) {
+	snapshot := ProjectRuntimeSnapshot{
+		Available: true,
+		Status:    project.Status,
+	}
+	if s.docker == nil {
+		return snapshot, nil
+	}
+	if project.Status != "running" {
+		snapshot.Warnings = append(snapshot.Warnings, "Container is not running, so the public URL may fail until the next healthy deploy.")
+		return snapshot, nil
+	}
+
+	stats, err := s.docker.ContainerStats(ctx, project.ContainerName)
+	if err != nil {
+		return ProjectRuntimeSnapshot{}, err
+	}
+
+	snapshot.ReadAt = stats.ReadAt
+	snapshot.CPUPercent = stats.CPUPercent
+	snapshot.MemoryUsageBytes = stats.MemoryUsageBytes
+	snapshot.MemoryLimitBytes = stats.MemoryLimitBytes
+	snapshot.MemoryPercent = stats.MemoryPercent
+	snapshot.NetworkRxBytes = stats.NetworkRxBytes
+	snapshot.NetworkTxBytes = stats.NetworkTxBytes
+	snapshot.BlockReadBytes = stats.BlockReadBytes
+	snapshot.BlockWriteBytes = stats.BlockWriteBytes
+	snapshot.PIDs = stats.PIDs
+	snapshot.Warnings = runtimeWarnings(snapshot)
+	return snapshot, nil
 }
 
 func (s *Service) GetProject(ctx context.Context, projectID string) (Project, Settings, error) {
@@ -297,13 +492,20 @@ func (s *Service) CreateProject(ctx context.Context, input WebProjectInput, user
 		return Project{}, err
 	}
 
-	if err := s.applyProject(ctx, project, settings); err != nil {
-		return Project{}, fmt.Errorf("project saved but deployment failed: %w", err)
+	if !input.SkipDeploy {
+		if err := s.applyProject(ctx, project, settings, projectDeployRequest{Trigger: "create", Actor: userID}); err != nil {
+			return Project{}, fmt.Errorf("project saved but deployment failed: %w", err)
+		}
+		project, settings, err = s.GetProject(ctx, record.ID)
+		if err != nil {
+			return Project{}, err
+		}
 	}
 
 	if err := s.store.InsertAuditLog(ctx, uuid.NewString(), userID, "project.create", "project:"+record.ID, map[string]any{
-		"slug":      record.Slug,
-		"subdomain": record.Subdomain,
+		"slug":        record.Slug,
+		"subdomain":   record.Subdomain,
+		"skip_deploy": input.SkipDeploy,
 	}); err != nil {
 		return Project{}, err
 	}
@@ -331,6 +533,9 @@ func (s *Service) UpdateProject(ctx context.Context, input WebProjectInput, user
 	record.Slug = current.Slug
 	record.Type = current.Type
 	record.WebhookSecret = current.WebhookSecret
+	record.GitHubRepoFullName = current.GitHubRepoFullName
+	record.GitHubInstallationID = current.GitHubInstallationID
+	record.GitHubDefaultBranch = current.GitHubDefaultBranch
 
 	if err := s.store.UpdateProject(ctx, record); err != nil {
 		return Project{}, err
@@ -341,8 +546,12 @@ func (s *Service) UpdateProject(ctx context.Context, input WebProjectInput, user
 		return Project{}, err
 	}
 
-	if err := s.applyProject(ctx, project, settings); err != nil {
+	if err := s.applyProject(ctx, project, settings, projectDeployRequest{Trigger: "update", Actor: userID}); err != nil {
 		return Project{}, fmt.Errorf("project updated but deployment failed: %w", err)
+	}
+	project, _, err = s.GetProject(ctx, record.ID)
+	if err != nil {
+		return Project{}, err
 	}
 
 	if err := s.store.InsertAuditLog(ctx, uuid.NewString(), userID, "project.update", "project:"+record.ID, map[string]any{
@@ -361,7 +570,11 @@ func (s *Service) RedeployProject(ctx context.Context, projectID, userID string)
 		return Project{}, err
 	}
 
-	if err := s.applyProject(ctx, project, settings); err != nil {
+	if err := s.applyProject(ctx, project, settings, projectDeployRequest{Trigger: "redeploy", Actor: userID}); err != nil {
+		return Project{}, err
+	}
+	project, _, err = s.GetProject(ctx, projectID)
+	if err != nil {
 		return Project{}, err
 	}
 
@@ -380,7 +593,11 @@ func (s *Service) RedeployProjectByWebhook(ctx context.Context, slug string) (Pr
 		return Project{}, err
 	}
 
-	if err := s.applyProject(ctx, project, settings); err != nil {
+	if err := s.applyProject(ctx, project, settings, projectDeployRequest{Trigger: "webhook", Actor: "webhook"}); err != nil {
+		return Project{}, err
+	}
+	project, _, err = s.GetProject(ctx, project.ID)
+	if err != nil {
 		return Project{}, err
 	}
 
@@ -539,8 +756,12 @@ func (s *Service) AttachDatabase(ctx context.Context, input DatabaseAttachmentIn
 	if err != nil {
 		return Project{}, err
 	}
-	if err := s.applyProject(ctx, project, settings); err != nil {
+	if err := s.applyProject(ctx, project, settings, projectDeployRequest{Trigger: "db.attach", Actor: userID}); err != nil {
 		return Project{}, fmt.Errorf("database attached but project redeploy failed: %w", err)
+	}
+	project, _, err = s.GetProject(ctx, project.ID)
+	if err != nil {
+		return Project{}, err
 	}
 
 	if err := s.store.InsertAuditLog(ctx, uuid.NewString(), userID, "project.db.attach", "project:"+project.ID, map[string]any{
@@ -571,8 +792,12 @@ func (s *Service) RotateDatabaseAttachment(ctx context.Context, projectID string
 	if err != nil {
 		return Project{}, err
 	}
-	if err := s.applyProject(ctx, project, settings); err != nil {
+	if err := s.applyProject(ctx, project, settings, projectDeployRequest{Trigger: "db.rotate", Actor: userID}); err != nil {
 		return Project{}, fmt.Errorf("credentials rotated but project redeploy failed: %w", err)
+	}
+	project, _, err = s.GetProject(ctx, projectID)
+	if err != nil {
+		return Project{}, err
 	}
 
 	if err := s.store.InsertAuditLog(ctx, uuid.NewString(), userID, "project.db.rotate", "project:"+projectID, map[string]any{
@@ -614,8 +839,12 @@ func (s *Service) DeleteDatabaseAttachment(ctx context.Context, projectID string
 	if err != nil {
 		return Project{}, err
 	}
-	if err := s.applyProject(ctx, project, settings); err != nil {
+	if err := s.applyProject(ctx, project, settings, projectDeployRequest{Trigger: "db.delete", Actor: userID}); err != nil {
 		return Project{}, fmt.Errorf("database detached but project redeploy failed: %w", err)
+	}
+	project, _, err = s.GetProject(ctx, projectID)
+	if err != nil {
+		return Project{}, err
 	}
 
 	if err := s.store.InsertAuditLog(ctx, uuid.NewString(), userID, "project.db.delete", "project:"+projectID, map[string]any{
@@ -625,6 +854,180 @@ func (s *Service) DeleteDatabaseAttachment(ctx context.Context, projectID string
 	}
 
 	return project, nil
+}
+
+func (s *Service) AddProjectDomain(ctx context.Context, projectID, hostname string, makePrimary bool, userID string) (Project, error) {
+	project, settings, err := s.GetProject(ctx, projectID)
+	if err != nil {
+		return Project{}, err
+	}
+	if project.Type != projectTypeWeb {
+		return Project{}, fmt.Errorf("custom domains are only available for web projects")
+	}
+
+	hostname = normalizeHostname(hostname)
+	if hostname == "" {
+		return Project{}, fmt.Errorf("domain hostname is required")
+	}
+	if hostname == normalizeHostname(project.FullDomain) {
+		return Project{}, fmt.Errorf("the generated project domain is already managed")
+	}
+
+	record, err := s.store.CreateProjectDomain(ctx, store.ProjectDomainRecord{
+		ProjectID: projectID,
+		Hostname:  hostname,
+		IsPrimary: makePrimary,
+	})
+	if err != nil {
+		return Project{}, err
+	}
+
+	project, settings, err = s.GetProject(ctx, projectID)
+	if err != nil {
+		return Project{}, err
+	}
+	if err := s.reconcileCaddy(ctx); err != nil {
+		return Project{}, err
+	}
+
+	if err := s.store.InsertAuditLog(ctx, uuid.NewString(), userID, "project.domain.add", "project:"+projectID, map[string]any{
+		"domain_id":   record.ID,
+		"hostname":    record.Hostname,
+		"is_primary":  record.IsPrimary,
+		"root_domain": settings.RootDomain,
+	}); err != nil {
+		return Project{}, err
+	}
+	return project, nil
+}
+
+func (s *Service) DeleteProjectDomain(ctx context.Context, projectID string, domainID int64, userID string) (Project, error) {
+	domain, err := s.store.GetProjectDomain(ctx, projectID, domainID)
+	if err != nil {
+		return Project{}, err
+	}
+	if err := s.store.DeleteProjectDomain(ctx, projectID, domainID); err != nil {
+		return Project{}, err
+	}
+	if err := s.reconcileCaddy(ctx); err != nil {
+		return Project{}, err
+	}
+	project, _, err := s.GetProject(ctx, projectID)
+	if err != nil {
+		return Project{}, err
+	}
+	if err := s.store.InsertAuditLog(ctx, uuid.NewString(), userID, "project.domain.delete", "project:"+projectID, map[string]any{
+		"domain_id": domainID,
+		"hostname":  domain.Hostname,
+	}); err != nil {
+		return Project{}, err
+	}
+	return project, nil
+}
+
+func (s *Service) VerifyProjectDomain(ctx context.Context, projectID string, domainID int64, userID string) (Project, error) {
+	project, settings, err := s.GetProject(ctx, projectID)
+	if err != nil {
+		return Project{}, err
+	}
+	domain, err := s.store.GetProjectDomain(ctx, projectID, domainID)
+	if err != nil {
+		return Project{}, err
+	}
+	expected := normalizeHostname(settings.OriginHostname)
+	if expected == "" {
+		expected = normalizeHostname(project.FullDomain)
+	}
+	if expected == "" {
+		return Project{}, fmt.Errorf("configure the origin hostname before verifying custom domains")
+	}
+
+	verified, message := s.verifyDomainTarget(ctx, domain.Hostname, expected)
+	if !verified {
+		return Project{}, fmt.Errorf("%s", message)
+	}
+	if err := s.store.MarkProjectDomainVerified(ctx, projectID, domainID, time.Now().UTC()); err != nil {
+		return Project{}, err
+	}
+	project, _, err = s.GetProject(ctx, projectID)
+	if err != nil {
+		return Project{}, err
+	}
+	if err := s.store.InsertAuditLog(ctx, uuid.NewString(), userID, "project.domain.verify", "project:"+projectID, map[string]any{
+		"domain_id": domainID,
+		"hostname":  domain.Hostname,
+		"expected":  expected,
+	}); err != nil {
+		return Project{}, err
+	}
+	return project, nil
+}
+
+func (s *Service) RollbackProject(ctx context.Context, projectID string, deployID int64, userID string) (Project, error) {
+	project, settings, err := s.GetProject(ctx, projectID)
+	if err != nil {
+		return Project{}, err
+	}
+	deploy, err := s.store.GetProjectDeploy(ctx, projectID, deployID)
+	if err != nil {
+		return Project{}, err
+	}
+	imageRef := strings.TrimSpace(deploy.ImageDigest)
+	if imageRef == "" {
+		imageRef = strings.TrimSpace(deploy.ImageRef)
+	}
+	if imageRef == "" {
+		return Project{}, fmt.Errorf("that deploy does not have a reusable image pin")
+	}
+
+	record, err := s.store.GetProject(ctx, projectID)
+	if err != nil {
+		return Project{}, err
+	}
+	record.ImageRef = imageRef
+	if err := s.store.UpdateProject(ctx, record); err != nil {
+		return Project{}, err
+	}
+
+	project, settings, err = s.GetProject(ctx, projectID)
+	if err != nil {
+		return Project{}, err
+	}
+	if err := s.applyProject(ctx, project, settings, projectDeployRequest{Trigger: "rollback", Actor: userID}); err != nil {
+		return Project{}, err
+	}
+	project, _, err = s.GetProject(ctx, projectID)
+	if err != nil {
+		return Project{}, err
+	}
+	if err := s.store.InsertAuditLog(ctx, uuid.NewString(), userID, "project.rollback", "project:"+projectID, map[string]any{
+		"deploy_id": deployID,
+		"image_ref": deploy.ImageRef,
+		"image_pin": imageRef,
+	}); err != nil {
+		return Project{}, err
+	}
+	return project, nil
+}
+
+func (s *Service) autoRollbackProject(ctx context.Context, projectID, imagePin string) error {
+	record, err := s.store.GetProject(ctx, projectID)
+	if err != nil {
+		return err
+	}
+	record.ImageRef = strings.TrimSpace(imagePin)
+	if err := s.store.UpdateProject(ctx, record); err != nil {
+		return err
+	}
+	project, settings, err := s.GetProject(ctx, projectID)
+	if err != nil {
+		return err
+	}
+	return s.applyProject(ctx, project, settings, projectDeployRequest{
+		Trigger:             "auto-rollback",
+		Actor:               "system",
+		DisableAutoRollback: true,
+	})
 }
 
 func (s *Service) recordFromInput(input WebProjectInput, existingSlug string) (store.ProjectRecord, error) {
@@ -669,6 +1072,14 @@ func (s *Service) recordFromInput(input WebProjectInput, existingSlug string) (s
 			return store.ProjectRecord{}, fmt.Errorf("internal port must be between 1 and 65535")
 		}
 		internalPort = input.InternalPort
+		if healthPath := strings.TrimSpace(input.HealthCheckPath); healthPath != "" {
+			if !strings.HasPrefix(healthPath, "/") {
+				return store.ProjectRecord{}, fmt.Errorf("health check path must start with /")
+			}
+			if input.HealthCheckTimeoutSeconds < 0 || input.HealthCheckTimeoutSeconds > 30 {
+				return store.ProjectRecord{}, fmt.Errorf("health check timeout must be between 1 and 30 seconds")
+			}
+		}
 	case projectTypeTCP, projectTypeUDP:
 		parsedPorts, err := parsePortMappings(input.PortMappingsText, projectType)
 		if err != nil {
@@ -695,17 +1106,22 @@ func (s *Service) recordFromInput(input WebProjectInput, existingSlug string) (s
 	}
 
 	return store.ProjectRecord{
-		ID:                id,
-		Slug:              slug,
-		Name:              name,
-		Type:              projectType,
-		ImageRef:          imageRef,
-		InternalPort:      internalPort,
-		Subdomain:         subdomain,
-		WatchtowerEnabled: input.WatchtowerEnabled,
-		WebhookSecret:     randomSecret(),
-		Env:               env,
-		Ports:             ports,
+		ID:                        id,
+		Slug:                      slug,
+		Name:                      name,
+		Type:                      projectType,
+		ImageRef:                  imageRef,
+		GitHubRepoFullName:        strings.TrimSpace(input.GitHubRepoFullName),
+		GitHubInstallationID:      input.GitHubInstallationID,
+		GitHubDefaultBranch:       strings.TrimSpace(input.GitHubDefaultBranch),
+		InternalPort:              internalPort,
+		Subdomain:                 subdomain,
+		WatchtowerEnabled:         input.WatchtowerEnabled,
+		WebhookSecret:             randomSecret(),
+		Env:                       env,
+		Ports:                     ports,
+		HealthCheckPath:           strings.TrimSpace(input.HealthCheckPath),
+		HealthCheckTimeoutSeconds: normalizedHealthTimeout(strings.TrimSpace(input.HealthCheckPath), input.HealthCheckTimeoutSeconds),
 	}, nil
 }
 
@@ -760,6 +1176,14 @@ func (s *Service) projectFromRecord(ctx context.Context, record store.ProjectRec
 	if err != nil {
 		return Project{}, err
 	}
+	domains, err := s.loadProjectDomains(ctx, record.ID)
+	if err != nil {
+		return Project{}, err
+	}
+	deploys, err := s.loadProjectDeploys(ctx, record.ID, 10)
+	if err != nil {
+		return Project{}, err
+	}
 
 	status := "not deployed"
 	if s.docker != nil {
@@ -771,37 +1195,138 @@ func (s *Service) projectFromRecord(ctx context.Context, record store.ProjectRec
 			}
 		}
 	}
+	if status == "not deployed" && strings.TrimSpace(record.GitHubRepoFullName) != "" {
+		status = "pending image"
+	}
+	primaryDomain := fqdn(settings.RootDomain, record.Subdomain)
+	for _, domain := range domains {
+		if domain.IsPrimary {
+			primaryDomain = domain.Hostname
+			break
+		}
+	}
 
 	return Project{
-		ID:                record.ID,
-		Name:              record.Name,
-		Slug:              record.Slug,
-		Type:              record.Type,
-		WebhookSecret:     record.WebhookSecret,
-		ImageRef:          record.ImageRef,
-		Subdomain:         record.Subdomain,
-		FullDomain:        fqdn(settings.RootDomain, record.Subdomain),
-		ContainerName:     containerName(record.Slug),
-		InternalPort:      record.InternalPort,
-		Ports:             projectPortsFromStore(record.Ports),
-		WatchtowerEnabled: record.WatchtowerEnabled,
-		Env:               env,
-		EnvText:           envText(env),
-		CreatedAt:         record.CreatedAt,
-		UpdatedAt:         record.UpdatedAt,
-		Status:            status,
-		DBAttachments:     attachments,
+		ID:                        record.ID,
+		Name:                      record.Name,
+		Slug:                      record.Slug,
+		Type:                      record.Type,
+		WebhookSecret:             record.WebhookSecret,
+		ImageRef:                  record.ImageRef,
+		GitHubRepoFullName:        record.GitHubRepoFullName,
+		GitHubInstallationID:      record.GitHubInstallationID,
+		GitHubDefaultBranch:       record.GitHubDefaultBranch,
+		Subdomain:                 record.Subdomain,
+		FullDomain:                fqdn(settings.RootDomain, record.Subdomain),
+		ContainerName:             containerName(record.Slug),
+		InternalPort:              record.InternalPort,
+		Ports:                     projectPortsFromStore(record.Ports),
+		WatchtowerEnabled:         record.WatchtowerEnabled,
+		Env:                       env,
+		EnvText:                   envText(env),
+		HealthCheckPath:           record.HealthCheckPath,
+		HealthCheckTimeoutSeconds: record.HealthCheckTimeoutSeconds,
+		CreatedAt:                 record.CreatedAt,
+		UpdatedAt:                 record.UpdatedAt,
+		Status:                    status,
+		PrimaryDomain:             primaryDomain,
+		CustomDomains:             domains,
+		Deploys:                   deploys,
+		DBAttachments:             attachments,
 	}, nil
 }
 
-func (s *Service) applyProject(ctx context.Context, project Project, settings Settings) error {
+func (s *Service) loadProjectDomains(ctx context.Context, projectID string) ([]ProjectDomain, error) {
+	records, err := s.store.ListProjectDomains(ctx, projectID)
+	if err != nil {
+		return nil, err
+	}
+	domains := make([]ProjectDomain, 0, len(records))
+	for _, record := range records {
+		domains = append(domains, ProjectDomain{
+			ID:            record.ID,
+			Hostname:      record.Hostname,
+			IsPrimary:     record.IsPrimary,
+			DNSVerifiedAt: record.DNSVerifiedAt,
+		})
+	}
+	return domains, nil
+}
+
+func (s *Service) loadProjectDeploys(ctx context.Context, projectID string, limit int) ([]ProjectDeploy, error) {
+	records, err := s.store.ListProjectDeploys(ctx, projectID, limit)
+	if err != nil {
+		return nil, err
+	}
+	deploys := make([]ProjectDeploy, 0, len(records))
+	for _, record := range records {
+		deploys = append(deploys, ProjectDeploy{
+			ID:          record.ID,
+			ImageDigest: record.ImageDigest,
+			ImageRef:    record.ImageRef,
+			Status:      record.Status,
+			Trigger:     record.Trigger,
+			Actor:       record.Actor,
+			StartedAt:   record.StartedAt,
+			FinishedAt:  record.FinishedAt,
+			Error:       record.Error,
+		})
+	}
+	return deploys, nil
+}
+
+func (s *Service) applyProject(ctx context.Context, project Project, settings Settings, request projectDeployRequest) error {
 	if project.Type == projectTypeWeb && settings.RootDomain == "" {
 		return fmt.Errorf("configure the root domain before deploying projects")
 	}
 
+	deploy, err := s.store.StartProjectDeploy(ctx, store.ProjectDeployRecord{
+		ProjectID: project.ID,
+		ImageRef:  project.ImageRef,
+		Status:    "running",
+		Trigger:   fallbackString(request.Trigger, "deploy"),
+		Actor:     strings.TrimSpace(request.Actor),
+	})
+	if err != nil {
+		return err
+	}
+
+	finalize := func(status, imageDigest, errorMessage string) error {
+		if finishErr := s.store.FinishProjectDeploy(ctx, project.ID, deploy.ID, status, imageDigest, errorMessage); finishErr != nil {
+			return finishErr
+		}
+		return nil
+	}
+
+	imageDigest := ""
+	previousHealthyPin := ""
+	if !request.DisableAutoRollback {
+		if previous, err := s.store.ListProjectDeploys(ctx, project.ID, 20); err == nil {
+			for _, item := range previous {
+				if item.ID == deploy.ID {
+					continue
+				}
+				if item.Status == "live" && strings.TrimSpace(item.ImageDigest) != "" {
+					previousHealthyPin = item.ImageDigest
+					break
+				}
+			}
+		}
+	}
+	s.emitDeployEvent(project.ID, "queued", "Starting deployment workflow.", "running")
+
 	if s.docker != nil {
-		if err := s.docker.PullImage(ctx, project.ImageRef); err != nil {
-			return err
+		if shouldPullImage(project.ImageRef) {
+			s.emitDeployEvent(project.ID, "pull", "Pulling image from registry.", "running")
+			if err := s.docker.PullImage(ctx, project.ImageRef); err != nil {
+				s.emitDeployEvent(project.ID, "failed", err.Error(), "failed")
+				if finishErr := finalize("failed", imageDigest, err.Error()); finishErr != nil {
+					return finishErr
+				}
+				return err
+			}
+		} else {
+			s.emitDeployEvent(project.ID, "pull", "Using a pinned local image for rollback.", "running")
 		}
 
 		labels := map[string]string{
@@ -827,19 +1352,60 @@ func (s *Service) applyProject(ctx context.Context, project Project, settings Se
 			spec.PublishedPorts = publishedPorts(project.Ports)
 		}
 
-		if _, err := s.docker.RecreateContainer(ctx, spec); err != nil {
+		s.emitDeployEvent(project.ID, "container", "Recreating the container.", "running")
+		inspect, err := s.docker.RecreateContainer(ctx, spec)
+		if err != nil {
+			s.emitDeployEvent(project.ID, "failed", err.Error(), "failed")
+			if finishErr := finalize("failed", imageDigest, err.Error()); finishErr != nil {
+				return finishErr
+			}
 			return err
 		}
+		imageDigest = inspect.ImageID
 	}
 
+	if project.Type == projectTypeWeb && strings.TrimSpace(project.HealthCheckPath) != "" {
+		targetURL := s.projectHealthURL(project)
+		s.emitDeployEvent(project.ID, "health-check", "Running health checks against "+targetURL+".", "running")
+		if err := s.waitForProjectHealthy(ctx, project, targetURL); err != nil {
+			s.emitDeployEvent(project.ID, "failed", err.Error(), "failed")
+			if finishErr := finalize("failed", imageDigest, err.Error()); finishErr != nil {
+				return finishErr
+			}
+			if previousHealthyPin != "" && !request.DisableAutoRollback {
+				s.emitDeployEvent(project.ID, "rollback", "Health checks failed. Rolling back to the last healthy image.", "running")
+				if rollbackErr := s.autoRollbackProject(ctx, project.ID, previousHealthyPin); rollbackErr != nil {
+					return fmt.Errorf("%s; automatic rollback failed: %w", err.Error(), rollbackErr)
+				}
+				return fmt.Errorf("%s; automatically rolled back to the last healthy image", err.Error())
+			}
+			return err
+		}
+		s.emitDeployEvent(project.ID, "health-check", "Health check passed.", "live")
+	}
+
+	s.emitDeployEvent(project.ID, "routing", "Reconciling Caddy routes.", "running")
 	if err := s.reconcileCaddy(ctx); err != nil {
+		s.emitDeployEvent(project.ID, "failed", err.Error(), "failed")
+		if finishErr := finalize("failed", imageDigest, err.Error()); finishErr != nil {
+			return finishErr
+		}
 		return err
 	}
 
+	s.emitDeployEvent(project.ID, "dns", "Updating managed DNS records.", "running")
 	if err := s.upsertCloudflare(ctx, project, settings); err != nil {
+		s.emitDeployEvent(project.ID, "failed", err.Error(), "failed")
+		if finishErr := finalize("failed", imageDigest, err.Error()); finishErr != nil {
+			return finishErr
+		}
 		return err
 	}
 
+	s.emitDeployEvent(project.ID, "live", "Deployment is live.", "live")
+	if err := finalize("live", imageDigest, ""); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -875,12 +1441,25 @@ func (s *Service) reconcileCaddy(ctx context.Context) error {
 		if record.Type != projectTypeWeb {
 			continue
 		}
-		host := fqdn(settings.RootDomain, record.Subdomain)
-		routes = append(routes, caddyadmin.HTTPRoute{
-			Host:      host,
-			Upstreams: []string{containerName(record.Slug) + ":" + strconv.Itoa(record.InternalPort)},
-		})
-		managedHosts = append(managedHosts, host)
+		hosts := []string{fqdn(settings.RootDomain, record.Subdomain)}
+		domains, err := s.store.ListProjectDomains(ctx, record.ID)
+		if err != nil {
+			return err
+		}
+		for _, domain := range domains {
+			hosts = append(hosts, domain.Hostname)
+		}
+		for _, host := range hosts {
+			host = strings.TrimSpace(host)
+			if host == "" {
+				continue
+			}
+			routes = append(routes, caddyadmin.HTTPRoute{
+				Host:      host,
+				Upstreams: []string{containerName(record.Slug) + ":" + strconv.Itoa(record.InternalPort)},
+			})
+			managedHosts = append(managedHosts, host)
+		}
 	}
 	if len(managedHosts) == 0 {
 		return nil
@@ -1396,6 +1975,103 @@ func fqdn(rootDomain, subdomain string) string {
 		return subdomain
 	}
 	return strings.TrimSuffix(subdomain, ".") + "." + strings.TrimPrefix(rootDomain, ".")
+}
+
+func normalizeHostname(value string) string {
+	return strings.Trim(strings.ToLower(strings.TrimSpace(value)), ".")
+}
+
+func normalizedHealthTimeout(path string, timeoutSeconds int) int {
+	if strings.TrimSpace(path) == "" {
+		return 0
+	}
+	if timeoutSeconds <= 0 {
+		return 5
+	}
+	return timeoutSeconds
+}
+
+func shouldPullImage(imageRef string) bool {
+	return !strings.HasPrefix(strings.TrimSpace(imageRef), "sha256:")
+}
+
+func fallbackString(value, fallback string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return fallback
+	}
+	return value
+}
+
+func (s *Service) verifyDomainTarget(ctx context.Context, hostname, expected string) (bool, string) {
+	hostname = normalizeHostname(hostname)
+	expected = normalizeHostname(expected)
+
+	if cname, err := s.lookupCNAME(ctx, hostname); err == nil {
+		if normalizeHostname(cname) == expected {
+			return true, "DNS verified"
+		}
+	}
+
+	hostAddrs, hostErr := s.lookupHost(ctx, hostname)
+	expectedAddrs, expectedErr := s.lookupHost(ctx, expected)
+	if hostErr == nil && expectedErr == nil {
+		expectedSet := map[string]struct{}{}
+		for _, addr := range expectedAddrs {
+			expectedSet[strings.TrimSpace(addr)] = struct{}{}
+		}
+		for _, addr := range hostAddrs {
+			if _, ok := expectedSet[strings.TrimSpace(addr)]; ok {
+				return true, "DNS verified"
+			}
+		}
+	}
+
+	return false, fmt.Sprintf("DNS for %s does not point to %s yet", hostname, expected)
+}
+
+func (s *Service) projectHealthURL(project Project) string {
+	base := fmt.Sprintf("http://%s:%d", project.ContainerName, project.InternalPort)
+	path := strings.TrimSpace(project.HealthCheckPath)
+	if path == "" {
+		return base
+	}
+	return strings.TrimRight(base, "/") + path
+}
+
+func (s *Service) waitForProjectHealthy(ctx context.Context, project Project, targetURL string) error {
+	timeout := time.Duration(normalizedHealthTimeout(project.HealthCheckPath, project.HealthCheckTimeoutSeconds)) * time.Second
+	var lastErr error
+	for attempt := 1; attempt <= 3; attempt++ {
+		if attempt > 1 {
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(time.Second):
+			}
+		}
+		if err := s.checkHTTP(ctx, targetURL, timeout); err == nil {
+			return nil
+		} else {
+			lastErr = err
+			s.emitDeployEvent(project.ID, "health-check", fmt.Sprintf("Attempt %d/3 failed: %s", attempt, err.Error()), "running")
+		}
+	}
+	return fmt.Errorf("health check failed after 3 attempts: %w", lastErr)
+}
+
+func runtimeWarnings(snapshot ProjectRuntimeSnapshot) []string {
+	warnings := []string{}
+	if snapshot.Status != "running" {
+		warnings = append(warnings, "Container is not running, so the public URL may fail until the next healthy deploy.")
+	}
+	if snapshot.MemoryLimitBytes > 0 && snapshot.MemoryPercent >= 85 {
+		warnings = append(warnings, "Memory usage is close to the container limit. Consider a leaner image or lower concurrency.")
+	}
+	if snapshot.CPUPercent >= 90 {
+		warnings = append(warnings, "CPU usage is very high right now. If requests feel slow, check the app logs for load or hot loops.")
+	}
+	return warnings
 }
 
 func containerName(slug string) string {

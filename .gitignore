@@ -4,4 +4,9 @@
 bin/
 dist/
 var/
-
+*.db
+*.db-*
+*.sqlite
+*.sqlite-*
+*.sqlite3
+*.sqlite3-*

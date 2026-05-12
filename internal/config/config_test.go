@@ -27,6 +27,9 @@ func TestLoadFromLookupDefaults(t *testing.T) {
 	if cfg.CaddyAdminURL != "http://shared-caddy:2019" {
 		t.Fatalf("CaddyAdminURL = %q", cfg.CaddyAdminURL)
 	}
+	if cfg.GitHubConfigured() {
+		t.Fatal("GitHubConfigured() should default to false")
+	}
 	if cfg.BackupsEnabled {
 		t.Fatal("BackupsEnabled should default to false")
 	}
@@ -137,6 +140,53 @@ func TestLoadFromLookupParsesBackupSettings(t *testing.T) {
 
 	if !cfg.BackupsEnabled || cfg.BackupsRetentionDays != 3 || cfg.BackupsScheduleUTC != "06:45" || cfg.BackupsIncludeEngineDumps {
 		t.Fatalf("unexpected backup config: %#v", cfg)
+	}
+}
+
+func TestLoadFromLookupParsesGitHubSettings(t *testing.T) {
+	t.Parallel()
+
+	cfg, err := LoadFromLookup(func(key string) (string, bool) {
+		switch key {
+		case "CADDYTOWER_GITHUB_APP_ID":
+			return "12345", true
+		case "CADDYTOWER_GITHUB_APP_SLUG":
+			return "caddytower-test", true
+		case "CADDYTOWER_GITHUB_APP_PRIVATE_KEY_PATH":
+			return "/run/secrets/caddytower-github.pem", true
+		case "CADDYTOWER_GITHUB_WEBHOOK_SECRET":
+			return "super-secret", true
+		default:
+			return "", false
+		}
+	})
+	if err != nil {
+		t.Fatalf("LoadFromLookup() error = %v", err)
+	}
+
+	if !cfg.GitHubConfigured() {
+		t.Fatal("GitHubConfigured() should be true")
+	}
+	if cfg.GitHubAppID != 12345 || cfg.GitHubAppSlug != "caddytower-test" {
+		t.Fatalf("unexpected GitHub config: %#v", cfg)
+	}
+}
+
+func TestLoadFromLookupRejectsPartialGitHubSettings(t *testing.T) {
+	t.Parallel()
+
+	_, err := LoadFromLookup(func(key string) (string, bool) {
+		switch key {
+		case "CADDYTOWER_GITHUB_APP_ID":
+			return "12345", true
+		case "CADDYTOWER_GITHUB_APP_SLUG":
+			return "caddytower-test", true
+		default:
+			return "", false
+		}
+	})
+	if err == nil {
+		t.Fatal("expected error for partial GitHub App config")
 	}
 }
 

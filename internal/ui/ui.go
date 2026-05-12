@@ -38,21 +38,38 @@ type SettingsFormData struct {
 	CloudflareProxied      bool
 }
 
+type GitHubInstallationItem struct {
+	InstallationID int64
+	AccountLogin   string
+	AccountType    string
+	ManageURL      string
+	CreatedAt      string
+}
+
+type GitHubStatusData struct {
+	Configured    bool
+	Connected     bool
+	InstallURL    string
+	Installations []GitHubInstallationItem
+}
+
 type ProjectFormData struct {
-	ID                string
-	Action            string
-	SubmitLabel       string
-	Type              string
-	Name              string
-	Slug              string
-	ImageRef          string
-	Subdomain         string
-	InternalPort      int
-	PortMappingsText  string
-	WatchtowerEnabled bool
-	EnvText           string
-	SlugReadOnly      bool
-	TypeReadOnly      bool
+	ID                        string
+	Action                    string
+	SubmitLabel               string
+	Type                      string
+	Name                      string
+	Slug                      string
+	ImageRef                  string
+	Subdomain                 string
+	InternalPort              int
+	HealthCheckPath           string
+	HealthCheckTimeoutSeconds int
+	PortMappingsText          string
+	WatchtowerEnabled         bool
+	EnvText                   string
+	SlugReadOnly              bool
+	TypeReadOnly              bool
 }
 
 type ProjectListItem struct {
@@ -87,6 +104,54 @@ type DBAttachmentFormData struct {
 	EnvVarName string
 }
 
+type ProjectDomainItem struct {
+	ID            int64
+	Hostname      string
+	IsPrimary     bool
+	DNSVerified   bool
+	DNSVerifiedAt string
+}
+
+type ProjectDomainFormData struct {
+	Hostname    string
+	MakePrimary bool
+}
+
+type ProjectDeployItem struct {
+	ID          int64
+	ImageDigest string
+	ImageRef    string
+	Status      string
+	Trigger     string
+	Actor       string
+	StartedAt   string
+	FinishedAt  string
+	Error       string
+	CanRollback bool
+}
+
+type ProjectEnvItem struct {
+	Key         string
+	Value       string
+	MaskedValue string
+	Sensitive   bool
+}
+
+type ProjectRuntimeItem struct {
+	Available      bool
+	Status         string
+	LastChecked    string
+	CPUSummary     string
+	MemorySummary  string
+	MemoryUsedPct  int
+	NetworkSummary string
+	BlockIOSummary string
+	ProcessSummary string
+	OpenAppStatus  string
+	Warnings       []string
+	ErrorMessage   string
+}
+
 type HomePageData struct {
 	GeneratedAt               time.Time
 	PageTitle                 string
@@ -97,6 +162,8 @@ type HomePageData struct {
 	CurrentUser               string
 	InfoMessage               string
 	ErrorMessage              string
+	ErrorTitle                string
+	ErrorHints                []string
 	Settings                  SettingsFormData
 	CreateForm                ProjectFormData
 	Projects                  []ProjectListItem
@@ -106,12 +173,26 @@ type HomePageData struct {
 	BackupsScheduleUTC        string
 	BackupsIncludeEngineDumps bool
 	VPSStatus                 VPSStatusData
+	ShowOnboarding            bool
+	OpenProjectDialog         bool
+	DomainConfigured          bool
+	NeedsSetup                bool
+	GitHubConfigured          bool
+	GitHubConnected           bool
 }
 
 type BackupItem struct {
 	Name      string
 	CreatedAt string
 	Size      string
+}
+
+type AuditLogItem struct {
+	Timestamp string
+	UserEmail string
+	Action    string
+	Target    string
+	Payload   string
 }
 
 type VPSStatusData struct {
@@ -152,19 +233,109 @@ type LoginPageData struct {
 	ErrorMessage string
 }
 
+type SettingsPageData struct {
+	PageTitle                 string
+	Headline                  string
+	CSRFToken                 string
+	Version                   version.Info
+	Config                    ConfigSummary
+	CurrentUser               string
+	InfoMessage               string
+	ErrorMessage              string
+	ErrorTitle                string
+	ErrorHints                []string
+	Settings                  SettingsFormData
+	GitHub                    GitHubStatusData
+	Projects                  []ProjectListItem
+	Backups                   []BackupItem
+	BackupsEnabled            bool
+	BackupsRetentionDays      int
+	BackupsScheduleUTC        string
+	BackupsIncludeEngineDumps bool
+	VPSStatus                 VPSStatusData
+	AuditFilter               string
+	AuditLogs                 []AuditLogItem
+}
+
+type GitHubRepositoryItem struct {
+	InstallationID int64
+	Name           string
+	FullName       string
+	DefaultBranch  string
+	HTMLURL        string
+	Selected       bool
+}
+
+type ImportDetectionData struct {
+	Ready                bool
+	RepoName             string
+	RepoFullName         string
+	RepoURL              string
+	DefaultBranch        string
+	InstallationID       int64
+	DockerfileFound      bool
+	DockerComposeFound   bool
+	WorkflowDetected     bool
+	WorkflowPaths        []string
+	FrameworkHint        string
+	SuggestedImageRef    string
+	ImageReachable       bool
+	ImageCheckMessage    string
+	WillOpenWorkflowPR   bool
+	SecretName           string
+	WebhookSnippet       string
+	UnsupportedReason    string
+	WorkflowPRFilePath   string
+	WorkflowPRBranchName string
+}
+
+type ImportPageData struct {
+	PageTitle            string
+	Headline             string
+	CSRFToken            string
+	CurrentUser          string
+	InfoMessage          string
+	ErrorMessage         string
+	ErrorTitle           string
+	ErrorHints           []string
+	GitHub               GitHubStatusData
+	SelectedInstallation int64
+	Query                string
+	Repositories         []GitHubRepositoryItem
+	SelectedRepoFullName string
+	Detection            ImportDetectionData
+	Project              ProjectFormData
+}
+
 type ProjectPageData struct {
-	PageTitle      string
-	Headline       string
-	CSRFToken      string
-	CurrentUser    string
-	InfoMessage    string
-	ErrorMessage   string
-	Project        ProjectFormData
-	ProjectMeta    ProjectListItem
-	WebhookURL     string
-	WebhookSecret  string
-	Attachments    []DBAttachmentItem
-	AttachmentForm DBAttachmentFormData
+	PageTitle          string
+	Headline           string
+	CSRFToken          string
+	CurrentUser        string
+	InfoMessage        string
+	ErrorMessage       string
+	ErrorTitle         string
+	ErrorHints         []string
+	Project            ProjectFormData
+	ProjectMeta        ProjectListItem
+	WebhookURL         string
+	WebhookSecret      string
+	WorkflowSecretName string
+	WorkflowSnippet    string
+	PrimaryDomain      string
+	PendingImage       bool
+	PendingImageHint   string
+	GeneratedDomain    string
+	ExpectedDomainDNS  string
+	HealthCheckTarget  string
+	Runtime            ProjectRuntimeItem
+	Domains            []ProjectDomainItem
+	DomainForm         ProjectDomainFormData
+	Deploys            []ProjectDeployItem
+	EnvItems           []ProjectEnvItem
+	DeployEventsURL    string
+	Attachments        []DBAttachmentItem
+	AttachmentForm     DBAttachmentFormData
 }
 
 func New() (*UI, error) {

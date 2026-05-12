@@ -17,6 +17,7 @@ import (
 	"caddytower/internal/caddyadmin"
 	"caddytower/internal/config"
 	"caddytower/internal/dockerx"
+	githubapp "caddytower/internal/github"
 	"caddytower/internal/projects"
 	"caddytower/internal/store"
 	"caddytower/internal/ui"
@@ -39,7 +40,7 @@ func TestRouterServesHome(t *testing.T) {
 		PublicBaseURL: "http://localhost:8080",
 		DataDir:       "/tmp/caddytower",
 		CaddyAdminURL: "http://shared-caddy:2019",
-	}, webUI, newNoopLogger(), version.Info{Version: "test"}, nil, nil, nil, nil)
+	}, webUI, newNoopLogger(), version.Info{Version: "test"}, nil, nil, nil, nil, nil)
 
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	rec := httptest.NewRecorder()
@@ -53,11 +54,20 @@ func TestRouterServesHome(t *testing.T) {
 	if !strings.Contains(rec.Body.String(), "CaddyTower dashboard") {
 		t.Fatalf("body missing scaffold heading: %q", rec.Body.String())
 	}
-	if !strings.Contains(rec.Body.String(), `placeholder="example.com"`) || !strings.Contains(rec.Body.String(), `placeholder="server.example.com or 203.0.113.10"`) {
-		t.Fatalf("body missing generic deployment placeholders: %q", rec.Body.String())
+	if !strings.Contains(rec.Body.String(), "Guided start") || !strings.Contains(rec.Body.String(), "Manual project") {
+		t.Fatalf("body missing dashboard primary actions: %q", rec.Body.String())
 	}
-	if !strings.Contains(rec.Body.String(), "How to set this up") {
-		t.Fatalf("body missing dashboard helper copy: %q", rec.Body.String())
+	if !strings.Contains(rec.Body.String(), "Finish the first-run flow") {
+		t.Fatalf("body missing onboarding-oriented copy: %q", rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "GitHub import works today") || strings.Contains(rec.Body.String(), "What’s coming") || strings.Contains(rec.Body.String(), "import flow next") || strings.Contains(rec.Body.String(), "planned onboarding") {
+		t.Fatalf("body has stale github onboarding copy: %q", rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), "transition:true") {
+		t.Fatalf("body still uses CSP-conflicting htmx view transition swap: %q", rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `id="project-delete-dialog"`) || strings.Contains(rec.Body.String(), "hx-confirm=") {
+		t.Fatalf("body missing delete confirmation dialog or still uses hx-confirm: %q", rec.Body.String())
 	}
 	if !strings.Contains(rec.Body.String(), "/assets/vendor/htmx.min.js") || strings.Contains(rec.Body.String(), "/assets/vendor/pico.classless.min.css") || strings.Contains(rec.Body.String(), "/assets/vendor/alpine.min.js") {
 		t.Fatalf("body has unexpected ui assets: %q", rec.Body.String())
@@ -77,7 +87,7 @@ func TestSecurityHeadersForPublicAdminPages(t *testing.T) {
 		PublicBaseURL: "https://admin.example.com",
 		DataDir:       "/tmp/caddytower",
 		CaddyAdminURL: "http://shared-caddy:2019",
-	}, webUI, newNoopLogger(), version.Info{Version: "test"}, nil, nil, nil, nil)
+	}, webUI, newNoopLogger(), version.Info{Version: "test"}, nil, nil, nil, nil, nil)
 
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	req.Header.Set("X-Forwarded-Proto", "https")
@@ -111,7 +121,7 @@ func TestSetupPageIncludesQRCodeAndAuthenticatorGuidance(t *testing.T) {
 		PublicBaseURL: "http://localhost:8080",
 		DataDir:       t.TempDir(),
 		CaddyAdminURL: "http://shared-caddy:2019",
-	}, webUI, newNoopLogger(), version.Info{Version: "test"}, stateStore, authService, nil, nil)
+	}, webUI, newNoopLogger(), version.Info{Version: "test"}, stateStore, authService, nil, nil, nil)
 
 	req := httptest.NewRequest(http.MethodGet, "/setup?email=admin@example.com", nil)
 	rec := httptest.NewRecorder()
@@ -145,7 +155,7 @@ func TestRootRedirectsToSetupWhenBootstrapRequired(t *testing.T) {
 		PublicBaseURL: "http://localhost:8080",
 		DataDir:       t.TempDir(),
 		CaddyAdminURL: "http://shared-caddy:2019",
-	}, webUI, newNoopLogger(), version.Info{Version: "test"}, stateStore, authService, nil, nil)
+	}, webUI, newNoopLogger(), version.Info{Version: "test"}, stateStore, authService, nil, nil, nil)
 
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	rec := httptest.NewRecorder()
@@ -194,7 +204,7 @@ func TestRootRedirectsToLoginAfterBootstrap(t *testing.T) {
 		PublicBaseURL: "http://localhost:8080",
 		DataDir:       t.TempDir(),
 		CaddyAdminURL: "http://shared-caddy:2019",
-	}, webUI, newNoopLogger(), version.Info{Version: "test"}, stateStore, authService, nil, nil)
+	}, webUI, newNoopLogger(), version.Info{Version: "test"}, stateStore, authService, nil, nil, nil)
 
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	rec := httptest.NewRecorder()
@@ -242,7 +252,7 @@ func TestDeployWebhookRedeploysProject(t *testing.T) {
 		DataDir:       t.TempDir(),
 		CaddyAdminURL: "http://shared-caddy:2019",
 		RootDomain:    "example.com",
-	}, webUI, newNoopLogger(), version.Info{Version: "test"}, stateStore, nil, projectService, nil)
+	}, webUI, newNoopLogger(), version.Info{Version: "test"}, stateStore, nil, projectService, nil, nil)
 
 	body := `{"ref":"refs/heads/main"}`
 	req := httptest.NewRequest(http.MethodPost, "/api/webhooks/deploy/demo", strings.NewReader(body))
@@ -311,7 +321,7 @@ func TestProjectLogsStreamRequiresAuthAndStreams(t *testing.T) {
 		DataDir:       t.TempDir(),
 		CaddyAdminURL: "http://shared-caddy:2019",
 		RootDomain:    "example.com",
-	}, webUI, newNoopLogger(), version.Info{Version: "test"}, stateStore, authService, projectService, nil)
+	}, webUI, newNoopLogger(), version.Info{Version: "test"}, stateStore, authService, projectService, nil, nil)
 
 	req := httptest.NewRequest(http.MethodGet, "/projects/"+project.ID+"/logs/stream", nil)
 	req.AddCookie(&http.Cookie{Name: authService.SessionCookieName(), Value: token})
@@ -324,6 +334,360 @@ func TestProjectLogsStreamRequiresAuthAndStreams(t *testing.T) {
 	}
 	if !strings.Contains(rec.Body.String(), "data: alpha") || !strings.Contains(rec.Body.String(), "data: beta") {
 		t.Fatalf("body = %q", rec.Body.String())
+	}
+}
+
+func TestProjectPageRendersDeployHistoryAndDomains(t *testing.T) {
+	t.Parallel()
+
+	webUI, err := ui.New()
+	if err != nil {
+		t.Fatalf("ui.New() error = %v", err)
+	}
+
+	stateStore := openServerTestStore(t)
+	authService := auth.New(stateStore, nil, "http://localhost:8080")
+	fixedNow := time.Date(2026, 5, 12, 7, 0, 0, 0, time.UTC)
+	authService.SetNow(func() time.Time { return fixedNow })
+	enrollment, err := authService.GenerateEnrollment("admin@example.com")
+	if err != nil {
+		t.Fatalf("GenerateEnrollment() error = %v", err)
+	}
+	code, err := totp.GenerateCodeCustom(enrollment.Secret, fixedNow, totp.ValidateOpts{
+		Period:    30,
+		Skew:      1,
+		Digits:    otp.DigitsSix,
+		Algorithm: otp.AlgorithmSHA1,
+	})
+	if err != nil {
+		t.Fatalf("GenerateCodeCustom() error = %v", err)
+	}
+	token, _, err := authService.CreateInitialUser(context.Background(), "admin@example.com", "super-secure-password", "super-secure-password", enrollment.Secret, code, "127.0.0.1", "test-agent")
+	if err != nil {
+		t.Fatalf("CreateInitialUser() error = %v", err)
+	}
+
+	projectService := projects.New(config.Config{
+		HTTPAddr:      ":8080",
+		PublicBaseURL: "http://localhost:8080",
+		DataDir:       t.TempDir(),
+		CaddyAdminURL: "http://shared-caddy:2019",
+		RootDomain:    "example.com",
+	}, stateStore, nil, &serverTestDocker{}, &serverTestCaddy{}, newNoopLogger())
+	if err := projectService.SaveSettings(context.Background(), projects.SettingsInput{
+		RootDomain:     "example.com",
+		OriginHostname: "origin.example.com",
+	}, ""); err != nil {
+		t.Fatalf("SaveSettings() error = %v", err)
+	}
+	project, err := projectService.CreateWebProject(context.Background(), projects.WebProjectInput{
+		Name:         "Demo",
+		Slug:         "demo",
+		ImageRef:     "ghcr.io/example/demo:latest",
+		Subdomain:    "demo",
+		InternalPort: 3000,
+		EnvText:      "API_KEY=secret",
+	}, "")
+	if err != nil {
+		t.Fatalf("CreateWebProject() error = %v", err)
+	}
+	if _, err := projectService.AddProjectDomain(context.Background(), project.ID, "app.example.org", true, ""); err != nil {
+		t.Fatalf("AddProjectDomain() error = %v", err)
+	}
+
+	srv := New(config.Config{
+		HTTPAddr:      ":8080",
+		PublicBaseURL: "http://localhost:8080",
+		DataDir:       t.TempDir(),
+		CaddyAdminURL: "http://shared-caddy:2019",
+		RootDomain:    "example.com",
+	}, webUI, newNoopLogger(), version.Info{Version: "test"}, stateStore, authService, projectService, nil, nil)
+
+	req := httptest.NewRequest(http.MethodGet, "/projects/"+project.ID, nil)
+	req.AddCookie(&http.Cookie{Name: authService.SessionCookieName(), Value: token})
+	rec := httptest.NewRecorder()
+
+	srv.Router().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+	body := rec.Body.String()
+	for _, fragment := range []string{"Deploy history", "Custom domain list", "Live deploy events", "Runtime snapshot", "Memory headroom", "Open app", "Delete project?", "app.example.org", "Add variable", "Paste or edit raw", "Health check path", "Health timeout"} {
+		if !strings.Contains(body, fragment) {
+			t.Fatalf("project page missing %q: %q", fragment, body)
+		}
+	}
+	if strings.Contains(body, "hx-confirm=") {
+		t.Fatalf("project page still uses hx-confirm for destructive actions: %q", body)
+	}
+}
+
+func TestDescribeUIErrorAddsHelpfulHints(t *testing.T) {
+	t.Parallel()
+
+	title, hints := describeUIError("health check failed after 3 attempts: request health check: connection refused")
+	if title != "Deployment did not finish cleanly" {
+		t.Fatalf("title = %q", title)
+	}
+	if len(hints) == 0 || !strings.Contains(hints[0], "live logs") {
+		t.Fatalf("hints = %#v", hints)
+	}
+
+	title, hints = describeUIError("slug must match ^[a-z0-9][a-z0-9-]{1,62}$")
+	if title != "Some project settings need fixing" {
+		t.Fatalf("validation title = %q", title)
+	}
+	if len(hints) == 0 || !strings.Contains(hints[0], "project form values") {
+		t.Fatalf("validation hints = %#v", hints)
+	}
+}
+
+func TestSettingsPageRendersDeploymentSetup(t *testing.T) {
+	t.Parallel()
+
+	webUI, err := ui.New()
+	if err != nil {
+		t.Fatalf("ui.New() error = %v", err)
+	}
+
+	stateStore := openServerTestStore(t)
+	authService := auth.New(stateStore, nil, "http://localhost:8080")
+	fixedNow := time.Date(2026, 5, 12, 7, 0, 0, 0, time.UTC)
+	authService.SetNow(func() time.Time { return fixedNow })
+	enrollment, err := authService.GenerateEnrollment("admin@example.com")
+	if err != nil {
+		t.Fatalf("GenerateEnrollment() error = %v", err)
+	}
+	code, err := totp.GenerateCodeCustom(enrollment.Secret, fixedNow, totp.ValidateOpts{
+		Period:    30,
+		Skew:      1,
+		Digits:    otp.DigitsSix,
+		Algorithm: otp.AlgorithmSHA1,
+	})
+	if err != nil {
+		t.Fatalf("GenerateCodeCustom() error = %v", err)
+	}
+	token, _, err := authService.CreateInitialUser(context.Background(), "admin@example.com", "super-secure-password", "super-secure-password", enrollment.Secret, code, "127.0.0.1", "test-agent")
+	if err != nil {
+		t.Fatalf("CreateInitialUser() error = %v", err)
+	}
+
+	projectService := projects.New(config.Config{
+		HTTPAddr:      ":8080",
+		PublicBaseURL: "http://localhost:8080",
+		DataDir:       t.TempDir(),
+		CaddyAdminURL: "http://shared-caddy:2019",
+	}, stateStore, nil, nil, nil, newNoopLogger())
+
+	srv := New(config.Config{
+		HTTPAddr:      ":8080",
+		PublicBaseURL: "http://localhost:8080",
+		DataDir:       t.TempDir(),
+		CaddyAdminURL: "http://shared-caddy:2019",
+	}, webUI, newNoopLogger(), version.Info{Version: "test"}, stateStore, authService, projectService, nil, nil)
+
+	req := httptest.NewRequest(http.MethodGet, "/settings", nil)
+	req.AddCookie(&http.Cookie{Name: authService.SessionCookieName(), Value: token})
+	rec := httptest.NewRecorder()
+
+	srv.Router().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+
+	body := rec.Body.String()
+	if !strings.Contains(body, "Deployment settings") || !strings.Contains(body, `placeholder="example.com"`) || !strings.Contains(body, `placeholder="server.example.com or 203.0.113.10"`) {
+		t.Fatalf("settings page missing deployment setup content: %q", body)
+	}
+	if !strings.Contains(body, "Adopt existing containers") {
+		t.Fatalf("settings page missing adopt action: %q", body)
+	}
+	if !strings.Contains(body, "Audit log") || !strings.Contains(body, "user.bootstrap") || !strings.Contains(body, "admin@example.com") {
+		t.Fatalf("settings page missing audit log content: %q", body)
+	}
+}
+
+func TestSettingsPageShowsGitHubInstallationStatus(t *testing.T) {
+	t.Parallel()
+
+	webUI, err := ui.New()
+	if err != nil {
+		t.Fatalf("ui.New() error = %v", err)
+	}
+
+	stateStore := openServerTestStore(t)
+	authService := auth.New(stateStore, nil, "http://localhost:8080")
+	fixedNow := time.Date(2026, 5, 12, 7, 0, 0, 0, time.UTC)
+	authService.SetNow(func() time.Time { return fixedNow })
+	enrollment, err := authService.GenerateEnrollment("admin@example.com")
+	if err != nil {
+		t.Fatalf("GenerateEnrollment() error = %v", err)
+	}
+	code, err := totp.GenerateCodeCustom(enrollment.Secret, fixedNow, totp.ValidateOpts{
+		Period:    30,
+		Skew:      1,
+		Digits:    otp.DigitsSix,
+		Algorithm: otp.AlgorithmSHA1,
+	})
+	if err != nil {
+		t.Fatalf("GenerateCodeCustom() error = %v", err)
+	}
+	token, _, err := authService.CreateInitialUser(context.Background(), "admin@example.com", "super-secure-password", "super-secure-password", enrollment.Secret, code, "127.0.0.1", "test-agent")
+	if err != nil {
+		t.Fatalf("CreateInitialUser() error = %v", err)
+	}
+
+	githubService := githubapp.New(githubapp.Config{
+		AppID:          12345,
+		AppSlug:        "caddytower",
+		PrivateKeyPath: "/unused/in/test",
+		WebhookSecret:  "github-secret",
+		APIBaseURL:     "https://api.github.test",
+		WebBaseURL:     "https://github.test",
+	}, stateStore, nil)
+	payload := []byte(`{"action":"created","installation":{"id":42,"account":{"login":"example-org","type":"Organization"}}}`)
+	if _, err := githubService.HandleWebhook(context.Background(), "installation", testWebhookSignature("github-secret", payload), payload); err != nil {
+		t.Fatalf("HandleWebhook() error = %v", err)
+	}
+
+	projectService := projects.New(config.Config{
+		HTTPAddr:      ":8080",
+		PublicBaseURL: "http://localhost:8080",
+		DataDir:       t.TempDir(),
+		CaddyAdminURL: "http://shared-caddy:2019",
+	}, stateStore, nil, nil, nil, newNoopLogger())
+
+	srv := New(config.Config{
+		HTTPAddr:      ":8080",
+		PublicBaseURL: "http://localhost:8080",
+		DataDir:       t.TempDir(),
+		CaddyAdminURL: "http://shared-caddy:2019",
+	}, webUI, newNoopLogger(), version.Info{Version: "test"}, stateStore, authService, projectService, githubService, nil)
+
+	req := httptest.NewRequest(http.MethodGet, "/settings", nil)
+	req.AddCookie(&http.Cookie{Name: authService.SessionCookieName(), Value: token})
+	rec := httptest.NewRecorder()
+
+	srv.Router().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, "Connect on GitHub") || !strings.Contains(body, "Import from GitHub") || !strings.Contains(body, "ready") || !strings.Contains(body, "example-org") || !strings.Contains(body, "Manage on GitHub") {
+		t.Fatalf("settings page missing github installation content: %q", body)
+	}
+}
+
+func TestSettingsPageFiltersAuditLog(t *testing.T) {
+	t.Parallel()
+
+	webUI, err := ui.New()
+	if err != nil {
+		t.Fatalf("ui.New() error = %v", err)
+	}
+
+	stateStore := openServerTestStore(t)
+	authService := auth.New(stateStore, nil, "http://localhost:8080")
+	fixedNow := time.Date(2026, 5, 12, 7, 0, 0, 0, time.UTC)
+	authService.SetNow(func() time.Time { return fixedNow })
+	enrollment, err := authService.GenerateEnrollment("admin@example.com")
+	if err != nil {
+		t.Fatalf("GenerateEnrollment() error = %v", err)
+	}
+	code, err := totp.GenerateCodeCustom(enrollment.Secret, fixedNow, totp.ValidateOpts{
+		Period:    30,
+		Skew:      1,
+		Digits:    otp.DigitsSix,
+		Algorithm: otp.AlgorithmSHA1,
+	})
+	if err != nil {
+		t.Fatalf("GenerateCodeCustom() error = %v", err)
+	}
+	token, user, err := authService.CreateInitialUser(context.Background(), "admin@example.com", "super-secure-password", "super-secure-password", enrollment.Secret, code, "127.0.0.1", "test-agent")
+	if err != nil {
+		t.Fatalf("CreateInitialUser() error = %v", err)
+	}
+	if err := stateStore.InsertAuditLog(context.Background(), "audit-extra", user.ID, "project.redeploy", "project:test", map[string]any{"slug": "test"}); err != nil {
+		t.Fatalf("InsertAuditLog() error = %v", err)
+	}
+
+	projectService := projects.New(config.Config{
+		HTTPAddr:      ":8080",
+		PublicBaseURL: "http://localhost:8080",
+		DataDir:       t.TempDir(),
+		CaddyAdminURL: "http://shared-caddy:2019",
+	}, stateStore, nil, nil, nil, newNoopLogger())
+
+	srv := New(config.Config{
+		HTTPAddr:      ":8080",
+		PublicBaseURL: "http://localhost:8080",
+		DataDir:       t.TempDir(),
+		CaddyAdminURL: "http://shared-caddy:2019",
+	}, webUI, newNoopLogger(), version.Info{Version: "test"}, stateStore, authService, projectService, nil, nil)
+
+	req := httptest.NewRequest(http.MethodGet, "/settings?audit=project.redeploy", nil)
+	req.AddCookie(&http.Cookie{Name: authService.SessionCookieName(), Value: token})
+	rec := httptest.NewRecorder()
+
+	srv.Router().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+
+	body := rec.Body.String()
+	if !strings.Contains(body, "project.redeploy") || !strings.Contains(body, "project:test") {
+		t.Fatalf("filtered audit entry missing: %q", body)
+	}
+	if strings.Contains(body, "user.bootstrap") {
+		t.Fatalf("unexpected bootstrap audit entry in filtered results: %q", body)
+	}
+}
+
+func TestGitHubWebhookPersistsInstallation(t *testing.T) {
+	t.Parallel()
+
+	webUI, err := ui.New()
+	if err != nil {
+		t.Fatalf("ui.New() error = %v", err)
+	}
+
+	stateStore := openServerTestStore(t)
+	githubService := githubapp.New(githubapp.Config{
+		AppID:          12345,
+		AppSlug:        "caddytower",
+		PrivateKeyPath: "/unused/in/test",
+		WebhookSecret:  "github-secret",
+		APIBaseURL:     "https://api.github.test",
+		WebBaseURL:     "https://github.test",
+	}, stateStore, nil)
+	srv := New(config.Config{
+		HTTPAddr:      ":8080",
+		PublicBaseURL: "http://localhost:8080",
+		DataDir:       t.TempDir(),
+		CaddyAdminURL: "http://shared-caddy:2019",
+	}, webUI, newNoopLogger(), version.Info{Version: "test"}, stateStore, nil, nil, githubService, nil)
+
+	payload := []byte(`{"action":"created","installation":{"id":42,"account":{"login":"example-org","type":"Organization"}}}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/webhooks/github", strings.NewReader(string(payload)))
+	req.Header.Set("X-GitHub-Event", "installation")
+	req.Header.Set("X-Hub-Signature-256", testWebhookSignature("github-secret", payload))
+	rec := httptest.NewRecorder()
+
+	srv.Router().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusAccepted)
+	}
+	status, err := githubService.Status(context.Background())
+	if err != nil {
+		t.Fatalf("Status() error = %v", err)
+	}
+	if len(status.Installations) != 1 || status.Installations[0].AccountLogin != "example-org" {
+		t.Fatalf("unexpected installations %#v", status.Installations)
 	}
 }
 
@@ -351,10 +715,24 @@ type serverTestDocker struct{ logContent string }
 
 func (serverTestDocker) PullImage(context.Context, string) error { return nil }
 func (serverTestDocker) RecreateContainer(_ context.Context, spec dockerx.ContainerSpec) (dockerx.ContainerInspect, error) {
-	return dockerx.ContainerInspect{Name: spec.Name, Running: true}, nil
+	return dockerx.ContainerInspect{Name: spec.Name, Running: true, ImageID: "sha256:test-image"}, nil
 }
 func (serverTestDocker) InspectContainer(context.Context, string) (dockerx.ContainerInspect, error) {
 	return dockerx.ContainerInspect{Running: true}, nil
+}
+func (serverTestDocker) ContainerStats(context.Context, string) (dockerx.ContainerStatsSnapshot, error) {
+	return dockerx.ContainerStatsSnapshot{
+		ReadAt:           time.Date(2026, 5, 12, 11, 0, 0, 0, time.UTC),
+		CPUPercent:       17.5,
+		MemoryUsageBytes: 128 * 1024 * 1024,
+		MemoryLimitBytes: 512 * 1024 * 1024,
+		MemoryPercent:    25,
+		NetworkRxBytes:   2 * 1024 * 1024,
+		NetworkTxBytes:   4 * 1024 * 1024,
+		BlockReadBytes:   1024,
+		BlockWriteBytes:  2048,
+		PIDs:             9,
+	}, nil
 }
 func (serverTestDocker) ListContainersByLabel(context.Context, string, string) ([]dockerx.ContainerSummary, error) {
 	return nil, nil

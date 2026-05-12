@@ -1,0 +1,227 @@
+{{define "import.gohtml"}}
+<!doctype html>
+<html lang="en" data-theme="dark">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>{{if .PageTitle}}{{.PageTitle}}{{else}}CaddyTower{{end}}</title>
+    <meta name="color-scheme" content="dark light">
+    <link rel="stylesheet" href="/assets/app.css">
+  </head>
+  <body hx-boost="true" hx-select="#app" hx-target="#app" hx-swap="outerHTML">
+    <div id="page-loader" class="page-loader" aria-hidden="true"></div>
+    <main id="app" class="shell">
+      <header class="page-header compact">
+        <div>
+          <p class="brand-pill">CaddyTower</p>
+          <h1>{{if .Headline}}{{.Headline}}{{else}}Import from GitHub{{end}}</h1>
+          <p class="lede">Pick a repository, let CaddyTower inspect it, then create a project with the smallest amount of manual setup possible.</p>
+        </div>
+        <div class="toolbar-actions">
+          <a class="button-link secondary" href="/settings">Settings</a>
+          <a class="button-link secondary" href="/">Back to dashboard</a>
+        </div>
+      </header>
+
+      {{template "error-callout" .}}
+      {{if .InfoMessage}}<p class="notice" role="status">{{.InfoMessage}}</p>{{end}}
+
+      {{if not .GitHub.Configured}}
+      <section class="card">
+        <h2>GitHub App not configured</h2>
+        <p>Set the GitHub App environment variables first, then connect an installation from the Settings page.</p>
+        <div class="actions section-spacer">
+          <a class="button-link" href="/settings">Open settings</a>
+        </div>
+      </section>
+      {{else if not .GitHub.Connected}}
+      <section class="card">
+        <h2>Connect GitHub first</h2>
+        <p>Install the GitHub App for at least one account so CaddyTower can inspect repositories securely without personal access tokens.</p>
+        <div class="actions section-spacer">
+          <a class="button-link" href="/github/install">Install GitHub App</a>
+          <a class="button-link secondary" href="/settings">Open settings</a>
+        </div>
+      </section>
+      {{else}}
+      <section class="page-grid sidebar">
+        <article class="card">
+          <div class="card-header">
+            <div class="card-title">
+              <h2>1. Choose a repository</h2>
+              <p class="panel-copy">Select one connected GitHub installation, then filter its repositories.</p>
+            </div>
+          </div>
+          <form method="get" action="/projects/import" class="stack section-spacer">
+            <label class="field">
+              <span>GitHub account</span>
+              <select name="installation">
+                {{range .GitHub.Installations}}
+                <option value="{{.InstallationID}}" {{if eq $.SelectedInstallation .InstallationID}}selected{{end}}>{{.AccountLogin}}</option>
+                {{end}}
+              </select>
+            </label>
+            <label class="field">
+              <span>Search repositories</span>
+              <input type="search" name="q" value="{{.Query}}" placeholder="owner/app or app">
+            </label>
+            <button type="submit">Refresh list</button>
+          </form>
+
+          {{if .Repositories}}
+          <div class="repo-list section-spacer">
+            {{range .Repositories}}
+            <article class="repo-item {{if .Selected}}is-selected{{end}}">
+              <div>
+                <h3>{{.FullName}}</h3>
+                <p>Default branch: {{.DefaultBranch}}</p>
+              </div>
+              <div class="actions">
+                <a class="button-link secondary" href="{{.HTMLURL}}" target="_blank" rel="noreferrer">Open repo</a>
+                <a class="button-link" href="/projects/import?installation={{.InstallationID}}&q={{$.Query}}&repo={{.FullName}}">Analyze</a>
+              </div>
+            </article>
+            {{end}}
+          </div>
+          {{else}}
+          <div class="empty-state section-spacer">
+            <p><strong>No repositories matched.</strong></p>
+            <p>Try a broader search or switch to another connected GitHub installation.</p>
+          </div>
+          {{end}}
+        </article>
+
+        <article class="card">
+          <div class="card-header">
+            <div class="card-title">
+              <h2>2. Review the import plan</h2>
+              <p class="panel-copy">CaddyTower checks for a Dockerfile, existing GHCR workflow, unsupported compose files, and a likely internal port.</p>
+            </div>
+          </div>
+
+          {{if .Detection.Ready}}
+          <div class="wizard-indicators section-spacer">
+            <span class="wizard-indicator is-active">Repository selected</span>
+            <span class="wizard-indicator is-active">Auto-detected</span>
+            <span class="wizard-indicator">Create project</span>
+          </div>
+          <dl class="kv">
+            <div><dt>Repository</dt><dd><a href="{{.Detection.RepoURL}}" target="_blank" rel="noreferrer">{{.Detection.RepoFullName}}</a></dd></div>
+            <div><dt>Default branch</dt><dd>{{.Detection.DefaultBranch}}</dd></div>
+            <div><dt>Detected app</dt><dd>{{if .Detection.FrameworkHint}}{{.Detection.FrameworkHint}}{{else}}Generic containerized app{{end}}</dd></div>
+            <div><dt>Dockerfile</dt><dd>{{if .Detection.DockerfileFound}}Found{{else}}Not found{{end}}</dd></div>
+            <div><dt>docker-compose</dt><dd>{{if .Detection.DockerComposeFound}}Found{{else}}Not found{{end}}</dd></div>
+            <div><dt>Existing image workflow</dt><dd>{{if .Detection.WorkflowDetected}}Found{{else}}Missing{{end}}</dd></div>
+            <div><dt>Suggested image</dt><dd class="mono">{{.Detection.SuggestedImageRef}}</dd></div>
+            <div><dt>Registry check</dt><dd>{{if .Detection.ImageCheckMessage}}{{.Detection.ImageCheckMessage}}{{else}}Not checked{{end}}</dd></div>
+          </dl>
+
+          {{if .Detection.WorkflowPaths}}
+          <div class="section-spacer">
+            <p><strong>Detected workflow files</strong></p>
+            <ul class="simple-list">
+              {{range .Detection.WorkflowPaths}}<li class="mono">{{.}}</li>{{end}}
+            </ul>
+          </div>
+          {{end}}
+
+          {{if .Detection.UnsupportedReason}}
+          <p class="alert section-spacer">{{.Detection.UnsupportedReason}}</p>
+          {{else}}
+          <div class="summary-grid section-spacer">
+            <article class="summary-card">
+              <h3>{{if .Detection.WillOpenWorkflowPR}}Workflow PR{{else}}Existing workflow{{end}}</h3>
+              <p>
+                {{if .Detection.WillOpenWorkflowPR}}
+                CaddyTower will create the project in pending-image mode, then open a PR adding {{.Detection.WorkflowPRFilePath}}.
+                {{else if .Detection.ImageReachable}}
+                A GHCR image already looks reachable, so CaddyTower can deploy immediately.
+                {{else}}
+                The image is not reachable yet, so CaddyTower will create the project first and wait for the next image push.
+                {{end}}
+              </p>
+            </article>
+            <article class="summary-card">
+              <h3>Webhook secret name</h3>
+              <p>Use <span class="inline-code">{{.Detection.SecretName}}</span> in the GitHub repository once the project exists.</p>
+            </article>
+          </div>
+
+          {{if .Detection.WebhookSnippet}}
+          <div class="section-spacer">
+            <h3>Webhook step preview</h3>
+            <p class="panel-copy">If your repo already has a GHCR build workflow, add this step after the image push.</p>
+            <pre class="code-block">{{.Detection.WebhookSnippet}}</pre>
+          </div>
+          {{end}}
+          {{end}}
+          {{else}}
+          <div class="empty-state section-spacer">
+            <p><strong>No repository selected yet.</strong></p>
+            <p>Pick a repo from the left to see the import preview and suggested project settings.</p>
+          </div>
+          {{end}}
+        </article>
+      </section>
+
+      {{if and .Detection.Ready (not .Detection.UnsupportedReason)}}
+      <section class="card section-spacer">
+        <div class="card-header">
+          <div class="card-title">
+            <h2>3. Create the project</h2>
+            <p class="panel-copy">Adjust the defaults if needed, then let CaddyTower create the project and either deploy it now or wait for the first image push.</p>
+          </div>
+        </div>
+        <form method="post" action="/projects/import" class="stack section-spacer" data-image-check-form>
+          <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+          <input type="hidden" name="installation_id" value="{{.Detection.InstallationID}}">
+          <input type="hidden" name="repo_full_name" value="{{.Detection.RepoFullName}}">
+          <input type="hidden" name="project_type" value="web">
+          <div class="grid two">
+            <label class="field">
+              <span>Name</span>
+              <input type="text" name="name" value="{{.Project.Name}}" required>
+            </label>
+            <label class="field">
+              <span>Slug</span>
+              <input type="text" name="slug" value="{{.Project.Slug}}" required>
+            </label>
+          </div>
+          <div class="grid two">
+            <label class="field">
+              <span>Subdomain</span>
+              <input type="text" name="subdomain" value="{{.Project.Subdomain}}" required>
+            </label>
+            <label class="field">
+              <span>Internal port</span>
+              <input type="number" name="internal_port" min="1" max="65535" value="{{.Project.InternalPort}}" required>
+            </label>
+          </div>
+          <label class="field">
+            <span>Image reference</span>
+            <input type="text" name="image_ref" value="{{.Project.ImageRef}}" required>
+            <small class="field-hint">Default is the standard GHCR location for this repository. Change it only if your workflow publishes elsewhere.</small>
+            <p class="input-status" data-image-check-status aria-live="polite"></p>
+          </label>
+          <label class="checkbox">
+            <input type="checkbox" name="watchtower_enabled" {{if .Project.WatchtowerEnabled}}checked{{end}}>
+            <span>Enable Watchtower updates</span>
+          </label>
+          <label class="field">
+            <span>Environment variables</span>
+            <textarea name="env_text" rows="8">{{.Project.EnvText}}</textarea>
+          </label>
+          <div class="actions">
+            <button type="submit">{{.Project.SubmitLabel}}</button>
+            <a class="button-link secondary" href="/">Cancel</a>
+          </div>
+        </form>
+      </section>
+      {{end}}
+      {{end}}
+    </main>
+    <script defer src="/assets/vendor/htmx.min.js"></script>
+    <script defer src="/assets/app.js"></script>
+  </body>
+</html>
+{{end}}

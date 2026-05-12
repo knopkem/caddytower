@@ -3,11 +3,13 @@ package dockerx
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"net"
 	"strings"
 	"testing"
+	"time"
 
 	"caddytower/internal/config"
 
@@ -173,6 +175,82 @@ func TestPullImageReturnsStreamError(t *testing.T) {
 	}
 }
 
+func TestContainerStatsSummarizesOneShotMetrics(t *testing.T) {
+	t.Parallel()
+
+	readAt := time.Date(2026, 5, 12, 11, 0, 0, 0, time.UTC)
+	payload, err := json.Marshal(container.StatsResponse{
+		Stats: container.Stats{
+			Read: readAt,
+			CPUStats: container.CPUStats{
+				CPUUsage: container.CPUUsage{
+					TotalUsage: 300,
+				},
+				SystemUsage: 2000,
+				OnlineCPUs:  2,
+			},
+			PreCPUStats: container.CPUStats{
+				CPUUsage: container.CPUUsage{
+					TotalUsage: 100,
+				},
+				SystemUsage: 1000,
+				OnlineCPUs:  2,
+			},
+			MemoryStats: container.MemoryStats{
+				Usage: 200,
+				Limit: 400,
+				Stats: map[string]uint64{
+					"inactive_file": 50,
+				},
+			},
+			PidsStats: container.PidsStats{Current: 7},
+			BlkioStats: container.BlkioStats{
+				IoServiceBytesRecursive: []container.BlkioStatEntry{
+					{Op: "Read", Value: 1024},
+					{Op: "Write", Value: 2048},
+				},
+			},
+		},
+		Networks: map[string]container.NetworkStats{
+			"edge": {RxBytes: 4096, TxBytes: 8192},
+		},
+	})
+	if err != nil {
+		t.Fatalf("json.Marshal() error = %v", err)
+	}
+
+	fake := &fakeAPIClient{
+		containerStatsOneShotFn: func(context.Context, string) (container.StatsResponseReader, error) {
+			return container.StatsResponseReader{
+				Body:   io.NopCloser(strings.NewReader(string(payload))),
+				OSType: "linux",
+			}, nil
+		},
+	}
+
+	service := New(fake)
+	snapshot, err := service.ContainerStats(context.Background(), "demo")
+	if err != nil {
+		t.Fatalf("ContainerStats() error = %v", err)
+	}
+
+	if snapshot.ReadAt != readAt {
+		t.Fatalf("ReadAt = %v", snapshot.ReadAt)
+	}
+	if snapshot.CPUPercent != 40 {
+		t.Fatalf("CPUPercent = %v", snapshot.CPUPercent)
+	}
+	if snapshot.MemoryUsageBytes != 150 || snapshot.MemoryLimitBytes != 400 || snapshot.MemoryPercent != 38 {
+		t.Fatalf("memory snapshot = %#v", snapshot)
+	}
+	if snapshot.NetworkRxBytes != 4096 || snapshot.NetworkTxBytes != 8192 {
+		t.Fatalf("network snapshot = %#v", snapshot)
+	}
+	if snapshot.BlockReadBytes != 1024 || snapshot.BlockWriteBytes != 2048 || snapshot.PIDs != 7 {
+		t.Fatalf("io snapshot = %#v", snapshot)
+	}
+}
+
 func TestExecStreamsOutputAndChecksExitCode(t *testing.T) {
 	t.Parallel()
 
@@ -222,21 +300,22 @@ func TestNewFromEnvUsesExplicitDockerHost(t *testing.T) {
 }
 
 type fakeAPIClient struct {
-	pingFn                 func(context.Context) (types.Ping, error)
-	imagePullFn            func(context.Context, string, image.PullOptions) (io.ReadCloser, error)
-	containerListFn        func(context.Context, container.ListOptions) ([]types.Container, error)
-	containerInspectFn     func(context.Context, string) (types.ContainerJSON, error)
-	containerStopFn        func(context.Context, string, container.StopOptions) error
-	containerRemoveFn      func(context.Context, string, container.RemoveOptions) error
-	containerCreateFn      func(context.Context, *container.Config, *container.HostConfig, *network.NetworkingConfig, *ocispec.Platform, string) (container.CreateResponse, error)
-	containerStartFn       func(context.Context, string, container.StartOptions) error
-	containerLogsFn        func(context.Context, string, container.LogsOptions) (io.ReadCloser, error)
-	containerExecCreateFn  func(context.Context, string, container.ExecOptions) (types.IDResponse, error)
-	containerExecAttachFn  func(context.Context, string, container.ExecAttachOptions) (types.HijackedResponse, error)
-	containerExecInspectFn func(context.Context, string) (container.ExecInspect, error)
-	networkListFn          func(context.Context, network.ListOptions) ([]network.Summary, error)
-	networkCreateFn        func(context.Context, string, network.CreateOptions) (network.CreateResponse, error)
-	networkConnectFn       func(context.Context, string, string, *network.EndpointSettings) error
+	pingFn                  func(context.Context) (types.Ping, error)
+	imagePullFn             func(context.Context, string, image.PullOptions) (io.ReadCloser, error)
+	containerListFn         func(context.Context, container.ListOptions) ([]types.Container, error)
+	containerInspectFn      func(context.Context, string) (types.ContainerJSON, error)
+	containerStatsOneShotFn func(context.Context, string) (container.StatsResponseReader, error)
+	containerStopFn         func(context.Context, string, container.StopOptions) error
+	containerRemoveFn       func(context.Context, string, container.RemoveOptions) error
+	containerCreateFn       func(context.Context, *container.Config, *container.HostConfig, *network.NetworkingConfig, *ocispec.Platform, string) (container.CreateResponse, error)
+	containerStartFn        func(context.Context, string, container.StartOptions) error
+	containerLogsFn         func(context.Context, string, container.LogsOptions) (io.ReadCloser, error)
+	containerExecCreateFn   func(context.Context, string, container.ExecOptions) (types.IDResponse, error)
+	containerExecAttachFn   func(context.Context, string, container.ExecAttachOptions) (types.HijackedResponse, error)
+	containerExecInspectFn  func(context.Context, string) (container.ExecInspect, error)
+	networkListFn           func(context.Context, network.ListOptions) ([]network.Summary, error)
+	networkCreateFn         func(context.Context, string, network.CreateOptions) (network.CreateResponse, error)
+	networkConnectFn        func(context.Context, string, string, *network.EndpointSettings) error
 }
 
 func (f *fakeAPIClient) Ping(ctx context.Context) (types.Ping, error) {
@@ -256,6 +335,16 @@ func (f *fakeAPIClient) ContainerList(ctx context.Context, opts container.ListOp
 
 func (f *fakeAPIClient) ContainerInspect(ctx context.Context, name string) (types.ContainerJSON, error) {
 	return f.containerInspectFn(ctx, name)
+}
+
+func (f *fakeAPIClient) ContainerStatsOneShot(ctx context.Context, name string) (container.StatsResponseReader, error) {
+	if f.containerStatsOneShotFn == nil {
+		return container.StatsResponseReader{
+			Body:   io.NopCloser(strings.NewReader(`{}`)),
+			OSType: "linux",
+		}, nil
+	}
+	return f.containerStatsOneShotFn(ctx, name)
 }
 
 func (f *fakeAPIClient) ContainerStop(ctx context.Context, name string, opts container.StopOptions) error {

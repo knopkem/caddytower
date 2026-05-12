@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"slices"
 	"sort"
 	"strconv"
@@ -30,6 +31,7 @@ type apiClient interface {
 	ImagePull(context.Context, string, image.PullOptions) (io.ReadCloser, error)
 	ContainerList(context.Context, container.ListOptions) ([]types.Container, error)
 	ContainerInspect(context.Context, string) (types.ContainerJSON, error)
+	ContainerStatsOneShot(context.Context, string) (container.StatsResponseReader, error)
 	ContainerStop(context.Context, string, container.StopOptions) error
 	ContainerRemove(context.Context, string, container.RemoveOptions) error
 	ContainerCreate(context.Context, *container.Config, *container.HostConfig, *network.NetworkingConfig, *ocispec.Platform, string) (container.CreateResponse, error)
@@ -84,11 +86,25 @@ type ContainerInspect struct {
 	ID             string
 	Name           string
 	Image          string
+	ImageID        string
 	Running        bool
 	Networks       []string
 	Labels         map[string]string
 	Env            []string
 	PublishedPorts []PortBinding
+}
+
+type ContainerStatsSnapshot struct {
+	ReadAt           time.Time
+	CPUPercent       float64
+	MemoryUsageBytes uint64
+	MemoryLimitBytes uint64
+	MemoryPercent    int
+	NetworkRxBytes   uint64
+	NetworkTxBytes   uint64
+	BlockReadBytes   uint64
+	BlockWriteBytes  uint64
+	PIDs             uint64
 }
 
 func New(api apiClient) *Service {
@@ -191,11 +207,47 @@ func (s *Service) InspectContainer(ctx context.Context, containerName string) (C
 		ID:             item.ID,
 		Name:           strings.TrimPrefix(item.Name, "/"),
 		Image:          item.Config.Image,
+		ImageID:        item.Image,
 		Running:        item.ContainerJSONBase.State.Running,
 		Networks:       networks,
 		Labels:         mapsClone(item.Config.Labels),
 		Env:            append([]string(nil), item.Config.Env...),
 		PublishedPorts: publishedPortsFromInspect(item.NetworkSettings.Ports),
+	}, nil
+}
+
+func (s *Service) ContainerStats(ctx context.Context, containerName string) (ContainerStatsSnapshot, error) {
+	reader, err := s.api.ContainerStatsOneShot(ctx, containerName)
+	if err != nil {
+		return ContainerStatsSnapshot{}, fmt.Errorf("stats container %s: %w", containerName, err)
+	}
+	defer reader.Body.Close()
+
+	var stats container.StatsResponse
+	if err := json.NewDecoder(reader.Body).Decode(&stats); err != nil {
+		return ContainerStatsSnapshot{}, fmt.Errorf("decode stats for container %s: %w", containerName, err)
+	}
+
+	memoryUsage := effectiveMemoryUsage(stats.MemoryStats)
+	memoryPercent := 0
+	if stats.MemoryStats.Limit > 0 {
+		memoryPercent = int(math.Round(float64(memoryUsage) / float64(stats.MemoryStats.Limit) * 100))
+	}
+
+	networkRx, networkTx := networkTotals(stats.Networks)
+	blockRead, blockWrite := blockIOTotals(stats.BlkioStats.IoServiceBytesRecursive)
+
+	return ContainerStatsSnapshot{
+		ReadAt:           stats.Read,
+		CPUPercent:       cpuPercent(stats),
+		MemoryUsageBytes: memoryUsage,
+		MemoryLimitBytes: stats.MemoryStats.Limit,
+		MemoryPercent:    memoryPercent,
+		NetworkRxBytes:   networkRx,
+		NetworkTxBytes:   networkTx,
+		BlockReadBytes:   blockRead,
+		BlockWriteBytes:  blockWrite,
+		PIDs:             stats.PidsStats.Current,
 	}, nil
 }
 
@@ -219,6 +271,65 @@ func (s *Service) EnsureNetwork(ctx context.Context, networkName string) error {
 	}
 
 	return nil
+}
+
+func cpuPercent(stats container.StatsResponse) float64 {
+	cpuDelta := float64(stats.CPUStats.CPUUsage.TotalUsage) - float64(stats.PreCPUStats.CPUUsage.TotalUsage)
+	systemDelta := float64(stats.CPUStats.SystemUsage) - float64(stats.PreCPUStats.SystemUsage)
+	if cpuDelta <= 0 || systemDelta <= 0 {
+		return 0
+	}
+
+	cpus := float64(stats.CPUStats.OnlineCPUs)
+	if cpus == 0 {
+		cpus = float64(len(stats.CPUStats.CPUUsage.PercpuUsage))
+	}
+	if cpus == 0 {
+		cpus = 1
+	}
+
+	return math.Round((cpuDelta/systemDelta)*cpus*1000) / 10
+}
+
+func effectiveMemoryUsage(stats container.MemoryStats) uint64 {
+	usage := stats.Usage
+	if usage == 0 {
+		return 0
+	}
+	if inactive, ok := stats.Stats["total_inactive_file"]; ok && inactive < usage {
+		return usage - inactive
+	}
+	if inactive, ok := stats.Stats["inactive_file"]; ok && inactive < usage {
+		return usage - inactive
+	}
+	if cache, ok := stats.Stats["cache"]; ok && cache < usage {
+		return usage - cache
+	}
+	return usage
+}
+
+func networkTotals(networks map[string]container.NetworkStats) (uint64, uint64) {
+	var rx uint64
+	var tx uint64
+	for _, item := range networks {
+		rx += item.RxBytes
+		tx += item.TxBytes
+	}
+	return rx, tx
+}
+
+func blockIOTotals(entries []container.BlkioStatEntry) (uint64, uint64) {
+	var read uint64
+	var write uint64
+	for _, entry := range entries {
+		switch strings.ToLower(entry.Op) {
+		case "read":
+			read += entry.Value
+		case "write":
+			write += entry.Value
+		}
+	}
+	return read, write
 }
 
 func (s *Service) EnsureContainerOnNetwork(ctx context.Context, networkName, containerName string) error {

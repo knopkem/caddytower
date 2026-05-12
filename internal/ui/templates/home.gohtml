@@ -8,212 +8,356 @@
     <meta name="color-scheme" content="dark light">
     <link rel="stylesheet" href="/assets/app.css">
   </head>
-  <body hx-boost="true" hx-select="#app" hx-target="#app" hx-swap="outerHTML transition:true">
+  <body hx-boost="true" hx-select="#app" hx-target="#app" hx-swap="outerHTML">
     <div id="page-loader" class="page-loader" aria-hidden="true"></div>
     <main id="app" class="shell">
       <header class="page-header">
         <div class="page-header-main">
           <p class="brand-pill">CaddyTower</p>
-          <h1>{{if .Headline}}{{.Headline}}{{else}}Lightweight VPS control plane{{end}}</h1>
+          <h1>{{if .Headline}}{{.Headline}}{{else}}CaddyTower dashboard{{end}}</h1>
           <p class="lede">
-            Deploy Docker projects behind shared Caddy, keep configuration in one place,
-            and optionally let Cloudflare DNS follow along.
+            Ship Docker projects behind shared Caddy without living in config files.
+            The dashboard stays focused on your apps; settings and VPS operations live one click away.
           </p>
         </div>
-        {{if .CSRFToken}}
-        <form method="post" action="/logout" class="inline-form">
-          <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
-          <button type="submit" class="secondary">Sign out</button>
-        </form>
-        {{end}}
+        <div class="toolbar-actions">
+          <button type="button" class="secondary" data-dialog-open="onboarding-dialog">Guided start</button>
+          {{if .GitHubConfigured}}
+          <a class="button-link secondary" href="/projects/import">{{if .GitHubConnected}}Import from GitHub{{else}}Connect GitHub{{end}}</a>
+          {{end}}
+          <button type="button" data-dialog-open="project-dialog">Manual project</button>
+          <a class="button-link secondary" href="/settings">Settings</a>
+          {{if .CSRFToken}}
+          <form method="post" action="/logout" class="inline-form">
+            <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+            <button type="submit" class="secondary">Sign out</button>
+          </form>
+          {{end}}
+        </div>
       </header>
 
-      {{if .ErrorMessage}}<p class="alert" role="alert">{{.ErrorMessage}}</p>{{end}}
+      {{template "error-callout" .}}
       {{if .InfoMessage}}<p class="notice" role="status">{{.InfoMessage}}</p>{{end}}
 
-      <section class="grid three">
-        <article class="card">
-          <div class="card-header">
-            <div class="card-title">
-              <h2>Admin session</h2>
-              <p>Quick context for the current admin session.</p>
+      <section class="card hero-card">
+        <div class="card-header">
+          <div class="card-title">
+            <h2>{{if .NeedsSetup}}Finish the first-run flow{{else}}Your deployment cockpit{{end}}</h2>
+            <p>
+              {{if .NeedsSetup}}
+              Configure the domain once, then create or adopt projects from a cleaner dashboard.
+              {{else}}
+              Manage live projects here, and jump to settings only when you need DNS, backups, adoption, or host-level operations.
+              {{end}}
+            </p>
+          </div>
+          <details class="help">
+            <summary>How this works</summary>
+            <div class="help-body">
+              <p><strong>Dashboard:</strong> create projects, open apps, redeploy, and jump into details.</p>
+              <p><strong>Settings:</strong> domain setup, VPS status, backups, adoption, and controller/runtime information.</p>
             </div>
+          </details>
+        </div>
+        <div class="summary-grid hero-summary">
+          <article class="summary-card">
+            <h3>Projects</h3>
+            <p>{{len .Projects}} managed project{{if ne (len .Projects) 1}}s{{end}}.</p>
+          </article>
+          <article class="summary-card">
+            <h3>Domain setup</h3>
+            <p>
+              {{if .DomainConfigured}}
+              Ready for public routing on <span class="inline-code">{{.Settings.RootDomain}}</span>.
+              {{else}}
+              Root domain or origin hostname still needs attention.
+              {{end}}
+            </p>
+          </article>
+          <article class="summary-card">
+            <h3>GitHub import</h3>
+            <p>
+              {{if .GitHubConnected}}
+              Ready to import repositories through the guided GitHub flow.
+              {{else if .GitHubConfigured}}
+              Connect the GitHub App in Settings, then import repositories here.
+              {{else}}
+              Configure the GitHub App to unlock the repo import flow.
+              {{end}}
+            </p>
+          </article>
+        </div>
+        <div class="actions section-spacer">
+          {{if .GitHubConfigured}}
+          <a class="button-link" href="/projects/import">{{if .GitHubConnected}}Import from GitHub{{else}}Connect GitHub{{end}}</a>
+          {{end}}
+          <button type="button" data-dialog-open="project-dialog">Create manual project</button>
+          <button type="button" class="secondary" data-dialog-open="onboarding-dialog">Open onboarding</button>
+          <a class="button-link secondary" href="/settings">Open settings</a>
+        </div>
+      </section>
+
+      {{if .NeedsSetup}}
+      <section class="card section onboarding-checklist-card">
+        <div class="card-header">
+          <div class="card-title">
+            <h2>Recommended next steps</h2>
+            <p>Follow this checklist to get from a fresh install to the first live app quickly.</p>
+          </div>
+          <details class="help">
+            <summary>Help</summary>
+            <div class="help-body">
+              <p>This checklist mirrors the guided onboarding wizard: welcome, domain setup, GitHub connection, and first deploy.</p>
+            </div>
+          </details>
+        </div>
+        <div class="checklist">
+          <article class="check-item {{if .DomainConfigured}}is-done{{end}}">
+            <span class="check-item-badge">1</span>
+            <div>
+              <h3>Configure the root domain</h3>
+              <p>
+                {{if .DomainConfigured}}
+                Using <span class="inline-code">{{.Settings.RootDomain}}</span> via <span class="inline-code">{{.Settings.OriginHostname}}</span>.
+                {{else}}
+                Add the root domain and origin hostname in Settings before launching public web projects.
+                {{end}}
+              </p>
+            </div>
+          </article>
+          <article class="check-item">
+            <span class="check-item-badge">2</span>
+            <div>
+              <h3>Connect GitHub</h3>
+              <p>
+                {{if .GitHubConnected}}
+                GitHub is connected and ready for the import wizard.
+                {{else if .GitHubConfigured}}
+                Finish installing the GitHub App to unlock repo import.
+                {{else}}
+                Configure the GitHub App in Settings if you want the guided repo import flow.
+                {{end}}
+              </p>
+            </div>
+          </article>
+          <article class="check-item {{if gt (len .Projects) 0}}is-done{{end}}">
+            <span class="check-item-badge">3</span>
+            <div>
+              <h3>Create or adopt the first project</h3>
+              <p>
+                {{if gt (len .Projects) 0}}
+                You already have managed projects in CaddyTower.
+                {{else}}
+                {{if .GitHubConnected}}
+                Start with the GitHub import wizard or use a manual image if you already have one.
+                {{else}}
+                Start with a manual image or use adoption from the Settings page if services already run on this VPS.
+                {{end}}
+                {{end}}
+              </p>
+            </div>
+          </article>
+        </div>
+      </section>
+      {{end}}
+
+      <section class="card section">
+        <div class="section-header">
+          <div class="section-title">
+            <h2>Projects</h2>
+            <p>Everything you actively operate stays here: open, redeploy, inspect, or jump into project settings.</p>
+          </div>
+          <div class="toolbar">
             <details class="help">
               <summary>Help</summary>
               <div class="help-body">
-                <p>This card shows who is signed in and whether the controller already has projects and a root domain configured.</p>
-                <p>After setup, use it to confirm you are working in the right admin session.</p>
+                <p>Use <strong>Manual project</strong> for any existing image such as <span class="inline-code">ghcr.io/owner/app:latest</span>.</p>
+                {{if .GitHubConfigured}}<p>Use <strong>Import from GitHub</strong> to pick a repository, auto-detect its Dockerfile, and scaffold the deploy workflow.</p>{{end}}
+                <p>For existing containers on the VPS, use adoption from the Settings page so you do not redeploy unnecessarily.</p>
               </div>
             </details>
+            {{if .GitHubConfigured}}<a class="button-link secondary" href="/projects/import">Import from GitHub</a>{{end}}
+            <button type="button" data-dialog-open="project-dialog">Create project</button>
           </div>
-          <dl class="stats">
-            <div><dt>Signed in as</dt><dd>{{if .CurrentUser}}{{.CurrentUser}}{{else}}anonymous{{end}}</dd></div>
-            <div><dt>Configured projects</dt><dd>{{len .Projects}}</dd></div>
-            <div><dt>Root domain</dt><dd>{{if .Settings.RootDomain}}{{.Settings.RootDomain}}{{else}}not configured{{end}}</dd></div>
-          </dl>
-        </article>
+        </div>
 
-        <article class="card">
-          <div class="card-header">
-            <div class="card-title">
-              <h2>Runtime overview</h2>
-              <p>Deployment settings that affect public web projects.</p>
-            </div>
-            <details class="help">
-              <summary>Help</summary>
-              <div class="help-body">
-                <p>Configure the root domain, origin hostname, and Cloudflare values before creating public web projects.</p>
+        {{if .Projects}}
+        <div class="project-grid">
+          {{range .Projects}}
+          <article class="subcard project-card">
+            <div class="card-header project-card-header">
+              <div class="card-title">
+                <h3>{{.Name}}</h3>
+                <p>{{.EndpointSummary}}</p>
               </div>
-            </details>
-          </div>
-          <dl class="stats">
-            <div><dt>Origin hostname</dt><dd>{{if .Settings.OriginHostname}}{{.Settings.OriginHostname}}{{else}}not configured{{end}}</dd></div>
-            <div><dt>Cloudflare zone</dt><dd>{{if .Settings.CloudflareZoneID}}{{.Settings.CloudflareZoneID}}{{else}}not configured{{end}}</dd></div>
-            <div><dt>Cloudflare token</dt><dd>{{if .Settings.CloudflareTokenPresent}}configured{{else}}not configured{{end}}</dd></div>
-            <div><dt>Cloudflare proxy</dt><dd>{{if .Settings.CloudflareProxied}}enabled{{else}}disabled{{end}}</dd></div>
-          </dl>
-        </article>
-
-        <article class="card">
-          <div class="card-header">
-            <div class="card-title">
-              <h2>VPS status</h2>
-              <p>RAM and disk usage for this host.</p>
+              <span class="status-pill">{{.Status}}</span>
             </div>
-            <details class="help">
-              <summary>Alerts</summary>
-              <div class="help-body">
-                <p>Warnings trigger below {{.VPSStatus.RAMThreshold}}% free RAM or {{.VPSStatus.DiskThreshold}}% free disk.</p>
-                <p>Email alerts are {{if .VPSStatus.EmailConfigured}}enabled for {{.VPSStatus.EmailTo}}{{else}}not configured; set SMTP environment variables to enable them{{end}}.</p>
-              </div>
-            </details>
-          </div>
-          {{if .VPSStatus.Available}}
-          <dl class="stats">
-            <div><dt>RAM used</dt><dd>{{.VPSStatus.MemorySummary}}</dd></div>
-            <div><dt>RAM free</dt><dd>{{.VPSStatus.MemoryFreePct}}%</dd></div>
-            <div><dt>Disk used</dt><dd>{{.VPSStatus.DiskSummary}}</dd></div>
-            <div><dt>Disk free</dt><dd>{{.VPSStatus.DiskFreePct}}%</dd></div>
-          </dl>
-          <div class="meter-stack">
-            <div>
-              <div class="meter-label"><span>RAM</span><span>{{.VPSStatus.MemoryUsedPct}}%</span></div>
-              <meter min="0" max="100" low="75" high="90" optimum="35" value="{{.VPSStatus.MemoryUsedPct}}"></meter>
+            <dl class="kv compact-kv">
+              <div><dt>Type</dt><dd>{{.Type}}</dd></div>
+              <div><dt>Container</dt><dd class="mono">{{.ContainerName}}</dd></div>
+              <div><dt>Image</dt><dd class="mono">{{.ImageRef}}</dd></div>
+              {{if and (eq .Type "web") .InternalPort}}<div><dt>Port</dt><dd>{{.InternalPort}}</dd></div>{{end}}
+              {{if and (ne .Type "web") .PortMappingsText}}<div><dt>Published ports</dt><dd class="mono">{{.PortMappingsText}}</dd></div>{{end}}
+            </dl>
+            <div class="actions section-spacer">
+              {{if .FullDomain}}<a class="button-link" href="https://{{.FullDomain}}" target="_blank" rel="noreferrer">Open app</a>{{end}}
+              <a class="button-link secondary" href="/projects/{{.ID}}">Manage</a>
+              <form method="post" action="/projects/{{.ID}}/deploy">
+                <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+                <button type="submit" class="secondary">Redeploy</button>
+              </form>
+              <form method="post" action="/projects/{{.ID}}/delete" data-confirm-dialog="project-delete-dialog" data-confirm-title="Delete {{.Name}}?" data-confirm-body="CaddyTower will remove the managed container, generated routing, custom domains, and shared attachments for this project." data-confirm-confirm-label="Delete project" data-confirm-progress-label="Deleting project…">
+                <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+                <button type="submit" class="danger">Delete</button>
+              </form>
             </div>
-            <div>
-              <div class="meter-label"><span>Disk</span><span>{{.VPSStatus.DiskUsedPct}}%</span></div>
-              <meter min="0" max="100" low="75" high="90" optimum="35" value="{{.VPSStatus.DiskUsedPct}}"></meter>
-            </div>
-          </div>
-          {{if .VPSStatus.Warnings}}
-          <div class="warning-list">
-            {{range .VPSStatus.Warnings}}<p>{{.}}</p>{{end}}
-          </div>
+          </article>
           {{end}}
-          <p class="muted">Checked {{.VPSStatus.CheckedAt}} on <span class="mono">{{.VPSStatus.DiskPath}}</span>.</p>
-          {{else}}
-          <div class="empty-state">
-            <p><strong>Status unavailable.</strong></p>
-            <p>{{.VPSStatus.ErrorMessage}}</p>
+        </div>
+        {{else}}
+        <div class="empty-state">
+          <p><strong>No projects yet.</strong></p>
+          <p>
+            {{if .GitHubConnected}}
+            Start with the GitHub import wizard, a manual image, or adoption for services already running on this VPS.
+            {{else}}
+            Right now, the fastest path is a manual image or adopting services already running on the VPS.
+            {{end}}
+          </p>
+          <div class="actions section-spacer">
+            {{if .GitHubConfigured}}<a class="button-link" href="/projects/import">{{if .GitHubConnected}}Import from GitHub{{else}}Connect GitHub{{end}}</a>{{end}}
+            <button type="button" data-dialog-open="project-dialog">Create manual project</button>
+            <a class="button-link secondary" href="/settings">Adopt existing services</a>
           </div>
-          {{end}}
-        </article>
+        </div>
+        {{end}}
       </section>
 
-      <section class="grid two section">
-        <article class="card">
-          <div class="card-header">
-            <div class="card-title">
-              <h2>Deployment settings</h2>
-              <p>{{if .Settings.RootDomain}}Managing {{.Settings.RootDomain}}{{else}}Set the root domain and Cloudflare connection once before creating public web projects.{{end}}</p>
-            </div>
-            <details class="help">
-              <summary>How to set this up</summary>
-              <div class="help-body">
-                <p><strong>Root domain</strong>: the base domain CaddyTower should manage, for example <span class="inline-code">example.com</span>.</p>
-                <p><strong>Origin hostname</strong>: the hostname or public IP Cloudflare should point at, for example <span class="inline-code">server.example.com</span> or <span class="inline-code">203.0.113.10</span>.</p>
-                <p>Cloudflare zone ID and API token are only required for automatic DNS records.</p>
-              </div>
-            </details>
-          </div>
-          <dl class="kv">
-            <div><dt>Root domain</dt><dd>{{if .Settings.RootDomain}}{{.Settings.RootDomain}}{{else}}not configured{{end}}</dd></div>
-            <div><dt>Origin hostname</dt><dd>{{if .Settings.OriginHostname}}{{.Settings.OriginHostname}}{{else}}not configured{{end}}</dd></div>
-            <div><dt>Cloudflare token</dt><dd>{{if .Settings.CloudflareTokenPresent}}configured{{else}}not configured{{end}}</dd></div>
-          </dl>
-          <button type="button" data-dialog-open="settings-dialog" class="section">Open setup wizard</button>
-        </article>
-
-        <article class="card">
-          <div class="card-header">
-            <div class="card-title">
-              <h2>Create project</h2>
-              <p>Use a guided popup when you are ready to deploy a new app or network service.</p>
-            </div>
-            <details class="help">
-              <summary>How to set this up</summary>
-              <div class="help-body">
-                <p>Use <strong>Web</strong> for apps behind Caddy on a subdomain. Use <strong>TCP</strong> or <strong>UDP</strong> for raw network services with published ports.</p>
-                <p>The image reference should point to a pullable image such as <span class="inline-code">ghcr.io/owner/app:latest</span>.</p>
-              </div>
-            </details>
-          </div>
-          <div class="summary-grid">
-            <article class="summary-card"><h3>1. Choose type</h3><p>Web for Caddy subdomains, TCP/UDP for raw ports.</p></article>
-            <article class="summary-card"><h3>2. Pick image</h3><p>Use a pullable image such as <span class="inline-code">ghcr.io/owner/app:latest</span>.</p></article>
-            <article class="summary-card"><h3>3. Deploy</h3><p>CaddyTower reconciles Docker, Caddy, and DNS.</p></article>
-          </div>
-          <button type="button" data-dialog-open="project-dialog" class="section">Create project</button>
-        </article>
-      </section>
-
-      <dialog id="settings-dialog" class="wizard-dialog">
-        <article class="dialog-card">
+      <dialog id="onboarding-dialog" class="wizard-dialog" data-dialog-auto-open="{{if .ShowOnboarding}}true{{else}}false{{end}}">
+        <article class="dialog-card" data-wizard>
           <div class="section-header">
             <div class="section-title">
-              <h2>Deployment setup wizard</h2>
-              <p>Configure DNS and origin settings for public web projects.</p>
+              <h2>First-run onboarding</h2>
+              <p>A guided path from a fresh install to the first live project.</p>
             </div>
             <button type="button" class="secondary" data-dialog-close>Close</button>
           </div>
-          <form method="post" action="/settings" class="stack">
-            <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
-            <label class="field">
-              <span>Root domain</span>
-              <input type="text" name="root_domain" value="{{.Settings.RootDomain}}" placeholder="example.com">
-            </label>
-            <label class="field">
-              <span>Origin hostname</span>
-              <input type="text" name="origin_hostname" value="{{.Settings.OriginHostname}}" placeholder="server.example.com or 203.0.113.10">
-            </label>
-            <label class="field">
-              <span>Cloudflare zone ID</span>
-              <input type="text" name="cloudflare_zone_id" value="{{.Settings.CloudflareZoneID}}">
-            </label>
-            <label class="field">
-              <span>Cloudflare API token</span>
-              <input type="password" name="cloudflare_api_token" value="" placeholder="{{if .Settings.CloudflareTokenPresent}}Configured - leave blank to keep{{else}}Paste token{{end}}">
-              <small class="field-hint">Use a token with DNS edit permissions only for the target zone.</small>
-            </label>
-            <label class="checkbox">
-              <input type="checkbox" name="cloudflare_proxied" {{if .Settings.CloudflareProxied}}checked{{end}}>
-              <span>Proxy records through Cloudflare</span>
-            </label>
-            <button type="submit">Save settings</button>
-          </form>
+          <div class="wizard-indicators">
+            <span class="wizard-indicator" data-wizard-indicator>Welcome</span>
+            <span class="wizard-indicator" data-wizard-indicator>Domain</span>
+            <span class="wizard-indicator" data-wizard-indicator>GitHub</span>
+            <span class="wizard-indicator" data-wizard-indicator>Deploy</span>
+          </div>
+
+          <section class="wizard-step" data-wizard-step>
+            <h3>Welcome to CaddyTower</h3>
+            <p>CaddyTower keeps a lightweight stack while removing the repetitive parts of managing shared Caddy, Docker, and DNS by hand.</p>
+            <div class="summary-grid section-spacer">
+              <article class="summary-card"><h3>Keep it small</h3><p>Server-rendered UI, one Go binary, and a workflow designed for tiny VPS instances.</p></article>
+              <article class="summary-card"><h3>Stay safe</h3><p>Password + TOTP login, encrypted secrets, webhook verification, and audit logging.</p></article>
+              <article class="summary-card"><h3>Ship faster</h3><p>Manual image deploys and one-click GitHub import are both live today.</p></article>
+            </div>
+            <div class="actions section-spacer">
+              <button type="button" data-wizard-next>Next</button>
+            </div>
+          </section>
+
+          <section class="wizard-step hidden" data-wizard-step>
+            <h3>Configure the domain foundation</h3>
+            <p>Before public web projects can work well, CaddyTower should know the root domain and the origin hostname or IP that Cloudflare points to.</p>
+            <div class="checklist section-spacer">
+              <article class="check-item {{if .DomainConfigured}}is-done{{end}}">
+                <span class="check-item-badge">✓</span>
+                <div>
+                  <h3>Current status</h3>
+                  <p>
+                    {{if .DomainConfigured}}
+                    Root domain <span class="inline-code">{{.Settings.RootDomain}}</span> and origin <span class="inline-code">{{.Settings.OriginHostname}}</span> are configured.
+                    {{else}}
+                    Domain setup is incomplete. Open Settings to finish it.
+                    {{end}}
+                  </p>
+                </div>
+              </article>
+            </div>
+            <div class="actions section-spacer">
+              <button type="button" class="secondary" data-wizard-back>Back</button>
+              <a class="button-link" href="/settings">Open settings</a>
+              <button type="button" class="secondary" data-wizard-next>Next</button>
+            </div>
+          </section>
+
+          <section class="wizard-step hidden" data-wizard-step>
+            <h3>GitHub import works today</h3>
+            <p>
+              {{if .GitHubConnected}}
+              GitHub is already connected. Pick a repository, let CaddyTower inspect its Docker setup, and create the project with as little manual entry as possible.
+              {{else if .GitHubConfigured}}
+              Connect the GitHub App once, then CaddyTower can pick a repo, inspect its Docker setup, and guide the first deploy for you.
+              {{else}}
+              If you want repo-based setup, configure the GitHub App in Settings first. Manual image deploys are still available right away.
+              {{end}}
+            </p>
+            <div class="summary-grid section-spacer">
+              <article class="summary-card"><h3>What CaddyTower handles</h3><p>Repo picker, Dockerfile and port detection, pending-image imports, generated GHCR workflow PRs when needed, and the deploy webhook snippet.</p></article>
+              <article class="summary-card"><h3>Current status</h3><p>{{if .GitHubConnected}}GitHub is connected and ready for the import flow.{{else if .GitHubConfigured}}GitHub App config is present. Install it for an account or org to unlock import.{{else}}GitHub App config is missing on this install, so import is not available yet.{{end}}</p></article>
+            </div>
+            <div class="actions section-spacer">
+              <button type="button" class="secondary" data-wizard-back>Back</button>
+              {{if .GitHubConnected}}
+              <a class="button-link" href="/projects/import">Import from GitHub</a>
+              {{else if .GitHubConfigured}}
+              <a class="button-link" href="/github/install">Connect on GitHub</a>
+              <a class="button-link secondary" href="/settings">Open settings</a>
+              {{else}}
+              <a class="button-link secondary" href="/settings">Configure GitHub in Settings</a>
+              {{end}}
+              <button type="button" data-wizard-next>Next</button>
+            </div>
+          </section>
+
+          <section class="wizard-step hidden" data-wizard-step>
+            <h3>You’re ready to ship</h3>
+            <p>Create a manual project now, or head into Settings if you want to configure DNS, adopt running services, or review VPS health first.</p>
+            <div class="actions section-spacer">
+              <button type="button" class="secondary" data-wizard-back>Back</button>
+              <a class="button-link" href="/?open=project">Create manual project</a>
+              <a class="button-link secondary" href="/settings">Go to settings</a>
+            </div>
+          </section>
         </article>
       </dialog>
 
-      <dialog id="project-dialog" class="wizard-dialog">
+      <dialog id="project-delete-dialog" class="wizard-dialog">
+        <article class="dialog-card dialog-card-danger">
+          <div class="section-header">
+            <div class="section-title">
+              <h2 data-confirm-title>Delete project?</h2>
+              <p data-confirm-body>This removes the managed container, routes, and related resources from CaddyTower.</p>
+            </div>
+            <button type="button" class="secondary" data-confirm-cancel>Cancel</button>
+          </div>
+          <div class="hint-list">
+            <p>Use this when you are sure the project should disappear from the dashboard and shared Caddy config.</p>
+            <p>Deletion can take a moment because CaddyTower also tears down managed infrastructure for the app.</p>
+          </div>
+          <div class="actions section-spacer">
+            <button type="button" class="secondary" data-confirm-cancel>Keep project</button>
+            <button type="button" class="danger" data-confirm-submit>Delete project</button>
+          </div>
+        </article>
+      </dialog>
+
+      <dialog id="project-dialog" class="wizard-dialog" data-dialog-auto-open="{{if .OpenProjectDialog}}true{{else}}false{{end}}">
         <article class="dialog-card">
           <div class="section-header">
             <div class="section-title">
-              <h2>Create project wizard</h2>
+              <h2>Create project</h2>
               <p>Deploy a web app or raw network service from a container image.</p>
             </div>
             <button type="button" class="secondary" data-dialog-close>Close</button>
           </div>
-          <form method="post" action="/projects" class="stack" data-project-type-form>
+          <form method="post" action="/projects" class="stack" data-project-type-form data-image-check-form>
             <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
             <label class="field">
               <span>Project type</span>
@@ -235,6 +379,8 @@
             <label class="field">
               <span>Image reference</span>
               <input type="text" name="image_ref" value="{{.CreateForm.ImageRef}}" placeholder="ghcr.io/owner/app:latest" required>
+              <small class="field-hint">CaddyTower will try an anonymous registry check before you deploy.</small>
+              <p class="input-status" data-image-check-status aria-live="polite"></p>
             </label>
             <fieldset data-web-fields>
               <legend>Web routing</legend>
@@ -269,182 +415,6 @@
           </form>
         </article>
       </dialog>
-
-      <section class="card section">
-        <div class="section-header">
-          <div class="section-title">
-            <h2>Projects</h2>
-            <p>Managed web and network services deployed through Docker, Caddy, and Cloudflare where needed.</p>
-          </div>
-          <div class="toolbar">
-            <details class="help">
-              <summary>Help</summary>
-              <div class="help-body">
-                <p>This table shows every managed project and its current endpoint, image, and status.</p>
-                <p>Use adoption after installing CaddyTower if workloads are already running on the VPS.</p>
-              </div>
-            </details>
-            <form method="post" action="/adopt" class="inline-form">
-              <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
-              <button type="submit" class="secondary">Adopt existing containers</button>
-            </form>
-          </div>
-        </div>
-        {{if .Projects}}
-        <div class="table-wrap">
-          <table>
-            <thead>
-              <tr>
-                <th>Name</th>
-                <th>Type</th>
-                <th>Endpoint</th>
-                <th>Image</th>
-                <th>Status</th>
-                <th>Actions</th>
-              </tr>
-            </thead>
-            <tbody>
-              {{range .Projects}}
-              <tr>
-                <td>
-                  <strong>{{.Name}}</strong>
-                  <div class="muted">{{.ContainerName}}</div>
-                </td>
-                <td><span class="pill">{{.Type}}</span></td>
-                <td>
-                  <div>{{.EndpointSummary}}</div>
-                  {{if and (eq .Type "web") .InternalPort}}
-                  <div class="muted">container port <span class="inline-code">{{.InternalPort}}</span></div>
-                  {{end}}
-                </td>
-                <td class="mono">{{.ImageRef}}</td>
-                <td><span class="pill">{{.Status}}</span></td>
-                <td>
-                  <div class="actions">
-                    <a class="button-link secondary" href="/projects/{{.ID}}">Edit</a>
-                    <form method="post" action="/projects/{{.ID}}/deploy">
-                      <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
-                      <button type="submit" class="secondary">Redeploy</button>
-                    </form>
-                    <form method="post" action="/projects/{{.ID}}/delete" hx-confirm="Delete this project and its managed resources?">
-                      <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
-                      <button type="submit" class="danger">Delete</button>
-                    </form>
-                  </div>
-                </td>
-              </tr>
-              {{end}}
-            </tbody>
-          </table>
-        </div>
-        {{else}}
-        <div class="empty-state">
-          <p><strong>No projects yet.</strong></p>
-          <p>Create one from the form above, or adopt existing containers if workloads are already running on this VPS.</p>
-        </div>
-        {{end}}
-      </section>
-
-      <section class="grid two section">
-        <article class="card">
-          <div class="card-header">
-            <div class="card-title">
-              <h2>Runtime config</h2>
-              <p>Controller-level configuration from the running process.</p>
-            </div>
-            <details class="help">
-              <summary>Help</summary>
-              <div class="help-body">
-                <p>Use this card to confirm the public base URL, Docker socket target, data location, and encrypted-secret master key state.</p>
-              </div>
-            </details>
-          </div>
-          <dl class="kv">
-            <div><dt>HTTP address</dt><dd class="mono">{{.Config.HTTPAddr}}</dd></div>
-            <div><dt>Public base URL</dt><dd class="mono">{{.Config.PublicBaseURL}}</dd></div>
-            <div><dt>Data dir</dt><dd class="mono">{{.Config.DataDir}}</dd></div>
-            <div><dt>State DB</dt><dd class="mono">{{.Config.StateDBPath}}</dd></div>
-            <div><dt>Caddy admin</dt><dd class="mono">{{.Config.CaddyAdminURL}}</dd></div>
-            <div><dt>Docker host</dt><dd class="mono">{{if .Config.DockerHost}}{{.Config.DockerHost}}{{else}}docker default{{end}}</dd></div>
-            <div><dt>Master key</dt><dd>{{if .Config.MasterKeySet}}configured{{else}}not set yet{{end}}</dd></div>
-            <div><dt>Backups</dt><dd>{{if .BackupsEnabled}}enabled{{else}}disabled{{end}}</dd></div>
-          </dl>
-        </article>
-
-        <article class="card">
-          <div class="card-header">
-            <div class="card-title">
-              <h2>Build info</h2>
-              <p>Useful when comparing releases or debugging upgrades.</p>
-            </div>
-          </div>
-          <dl class="kv">
-            <div><dt>Version</dt><dd>{{.Version.Version}}</dd></div>
-            <div><dt>Commit</dt><dd class="mono">{{.Version.Commit}}</dd></div>
-            <div><dt>Date</dt><dd>{{.Version.Date}}</dd></div>
-            <div><dt>Rendered</dt><dd>{{.GeneratedAt.Format "2006-01-02 15:04:05 MST"}}</dd></div>
-          </dl>
-        </article>
-      </section>
-
-      <section class="card section">
-        <div class="section-header">
-          <div class="section-title">
-            <h2>Backups</h2>
-            <p>Optional snapshots of controller state and shared databases.</p>
-          </div>
-          <details class="help">
-            <summary>Help</summary>
-            <div class="help-body">
-              <p>Backups are optional and stay disabled unless you enable them in the controller environment.</p>
-              <p>When enabled, take a manual snapshot before risky changes.</p>
-            </div>
-          </details>
-        </div>
-        {{if .BackupsEnabled}}
-        <div class="toolbar">
-          <p class="muted">Scheduled at {{.BackupsScheduleUTC}} UTC, retained for {{.BackupsRetentionDays}} days{{if .BackupsIncludeEngineDumps}}, with shared engine dumps included{{else}}, without shared engine dumps{{end}}.</p>
-          <form method="post" action="/backups/run" class="inline-form">
-            <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
-            <button type="submit" class="secondary">Run backup now</button>
-          </form>
-        </div>
-        {{if .Backups}}
-        <div class="table-wrap section">
-          <table>
-            <thead>
-              <tr>
-                <th>Name</th>
-                <th>Created</th>
-                <th>Size</th>
-                <th>Download</th>
-              </tr>
-            </thead>
-            <tbody>
-              {{range .Backups}}
-              <tr>
-                <td class="mono">{{.Name}}</td>
-                <td>{{.CreatedAt}}</td>
-                <td>{{.Size}}</td>
-                <td><a class="button-link secondary" href="/backups/{{.Name}}" hx-boost="false">Download</a></td>
-              </tr>
-              {{end}}
-            </tbody>
-          </table>
-        </div>
-        {{else}}
-        <div class="empty-state section">
-          <p><strong>No backups yet.</strong></p>
-          <p>Run one after enabling the feature if you want a safety snapshot before large changes.</p>
-        </div>
-        {{end}}
-        {{else}}
-        <div class="empty-state">
-          <p><strong>Backups are currently disabled.</strong></p>
-          <p>Enable them with <span class="inline-code">CADDYTOWER_BACKUPS_ENABLED=true</span> if you want scheduled snapshots.</p>
-        </div>
-        {{end}}
-      </section>
     </main>
     <script defer src="/assets/vendor/htmx.min.js"></script>
     <script defer src="/assets/app.js"></script>

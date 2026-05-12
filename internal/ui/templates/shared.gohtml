@@ -1,0 +1,15 @@
+{{define "error-callout"}}
+{{if .ErrorMessage}}
+<section class="alert flash-card" role="alert">
+  <div class="card-title">
+    <h2>{{if .ErrorTitle}}{{.ErrorTitle}}{{else}}Action failed{{end}}</h2>
+    <p>{{.ErrorMessage}}</p>
+  </div>
+  {{if .ErrorHints}}
+  <div class="hint-list">
+    {{range .ErrorHints}}<p>{{.}}</p>{{end}}
+  </div>
+  {{end}}
+</section>
+{{end}}
+{{end}}

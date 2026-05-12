@@ -1,193 +1,171 @@
 # CaddyTower
 
-CaddyTower is a lightweight control plane for a single Docker VPS running shared
-Caddy, Cloudflare DNS, and image-only deployments from GHCR.
+A tiny, RAM-friendly control plane for a single Docker VPS. CaddyTower turns
+shared Caddy + Docker + Cloudflare into a guided UI so you can ship GitHub
+projects on small instances (2 GB RAM is the design target) without hand-editing
+config files.
 
-This repository currently contains:
+It is intentionally simpler than SwiftWave or CapRover: no app store, no
+in-host builds, no buildpack runtime. You bring GHCR images (or import a repo
+and let CaddyTower scaffold the workflow), CaddyTower handles routing,
+deploys, domains, DNS, env, databases, logs, health, and rollback.
 
-- Go 1.25 app with a small chi-based HTTP server
-- Embedded HTML templates, custom CSS, and vendored HTMX for progressive enhancement
-- Health and version endpoints
-- First-user bootstrap, password login, TOTP, sessions, and CSRF protection
-- Deployment settings for shared Caddy and Cloudflare DNS
-- Web project CRUD with Docker reconciliation and Caddy route management
-- TCP and UDP project support with published host-port mappings
+## Highlights
+
+- One Go binary, server-rendered UI, htmx + custom CSS — no Node runtime needed
+- First-run bootstrap with password + TOTP login
+- Guided onboarding wizard from fresh install → first live app
+- **Import from GitHub**: pick a repo, auto-detect Dockerfile and port,
+  optionally open a PR adding the deploy workflow
+- Per-project pages with deploy history, **rollback**, env editor, custom
+  domains, live logs, runtime stats, optional **health checks + auto-rollback**
 - Shared Postgres and MariaDB attachments with per-project credentials
-- HMAC-signed deploy webhooks for GitHub Actions
-- Live per-project log streaming in the admin UI
-- Existing-container adoption from Docker + current Caddy routes
-- Optional backup archives with manual download from the dashboard
-- Multi-stage distroless Docker image
-- GitHub Actions workflow for test/build/push to GHCR
+- VPS RAM / disk monitoring with optional email warnings
+- Optional daily backups (SQLite + shared DB dumps)
+- Audit log of admin actions
 
-## Local run
+## Quickstart
 
-```bash
-go run ./cmd/caddytower
-```
-
-Open <http://localhost:8080>.
-
-## VPS bootstrap
+You need a VPS with **Docker (with the Compose plugin)**. Nothing else.
 
 ```bash
+# 1. Pull the repo onto the VPS (or just the deploy/ + scripts/ directories).
+git clone https://github.com/your-org/caddytower /opt/caddytower-src
+cd /opt/caddytower-src
+
+# 2. Run the bootstrap script. It checks Docker, creates the `edge` network,
+#    copies the compose + Caddy files, generates a master key, and starts
+#    shared-caddy + watchtower if they are not already present.
+./scripts/bootstrap-caddytower.sh /opt/caddytower
+
+# 3. The first run stops after writing /opt/caddytower/caddytower.env so you
+#    can fill in CADDYTOWER_IMAGE, CADDYTOWER_PUBLIC_BASE_URL, and
+#    CADDYTOWER_ROOT_DOMAIN. Edit it, then run the script again.
 ./scripts/bootstrap-caddytower.sh /opt/caddytower
 ```
 
-On a fresh VPS, the only required host dependency is **Docker with the Compose
-plugin**. The bootstrap script checks that Docker is installed and reachable
-before doing anything else.
-
-The bootstrap script:
-
-- creates the external Docker `edge` network if needed
-- copies the compose file and example env file into `/opt/caddytower`
-- copies a minimal Caddy config that exposes the Admin API on the Docker network
-- generates `CADDYTOWER_MASTER_KEY` on first run
-- starts bundled `shared-caddy` and `watchtower` containers when they are not
-  already present
-- starts the controller once `CADDYTOWER_IMAGE` has been configured
-
-If your VPS already has `shared-caddy` and/or `watchtower`, the script leaves
-those existing containers in place and starts only the missing pieces.
-
-On the first run, the script may stop after generating `caddytower.env` so you
-can fill in `CADDYTOWER_IMAGE`, `CADDYTOWER_PUBLIC_BASE_URL`, and
-`CADDYTOWER_ROOT_DOMAIN`. After that, run the same bootstrap command again.
-
-The initial compose file binds CaddyTower to `127.0.0.1:8080` only, so the
-recommended first-time setup is an SSH tunnel:
+The controller binds to `127.0.0.1:8080` only, so the first login goes through
+an SSH tunnel:
 
 ```bash
 ssh -L 8080:127.0.0.1:8080 ubuntu@your-vps
+open http://127.0.0.1:8080/setup
 ```
 
-Then open <http://127.0.0.1:8080/setup>.
+Create the first admin user, scan the TOTP QR with any authenticator
+(1Password, Bitwarden, Aegis, Google/Microsoft Authenticator, Authy, …), and
+sign in. The dashboard opens **Guided start** automatically.
 
-The setup page shows a scannable QR code plus the manual secret. Any standard
-TOTP authenticator app that supports `otpauth://` enrollment works, including
-1Password, Bitwarden, Google Authenticator, Microsoft Authenticator, Authy,
-Aegis, 2FAS, and similar apps.
+## Getting your first project live
 
-## Environment
+After login, the dashboard walks you through four steps:
 
-| Variable | Default | Purpose |
-| --- | --- | --- |
-| `CADDYTOWER_HTTP_ADDR` | `:8080` | HTTP listen address |
-| `CADDYTOWER_PUBLIC_BASE_URL` | `http://localhost:8080` | Public URL used in links |
-| `CADDYTOWER_DATA_DIR` | `./var` | Persistent app data directory |
-| `CADDYTOWER_CADDY_ADMIN_URL` | `http://shared-caddy:2019` | Caddy Admin API base URL |
-| `CADDYTOWER_ROOT_DOMAIN` | _(empty)_ | Root domain managed by the controller |
-| `DOCKER_HOST` | _(docker default)_ | Docker daemon address |
-| `CADDYTOWER_MASTER_KEY` | _(empty)_ | Base64-encoded 32-byte AES-GCM key for encrypted secrets; required for non-local public URLs |
-| `CADDYTOWER_BACKUPS_ENABLED` | `false` | Enable scheduled and manual backups |
-| `CADDYTOWER_BACKUPS_RETENTION_DAYS` | `14` | Days of backup archives to keep |
-| `CADDYTOWER_BACKUPS_SCHEDULE_UTC` | `02:30` | Daily backup time in UTC (`HH:MM`) |
-| `CADDYTOWER_BACKUPS_INCLUDE_ENGINE_DUMPS` | `true` | Include shared Postgres/MariaDB dumps in archives |
-| `CADDYTOWER_VPS_WARNINGS_ENABLED` | `true` | Enable RAM/disk warning checks |
-| `CADDYTOWER_VPS_RAM_FREE_WARN_PERCENT` | `15` | Warn when available RAM falls below this percentage |
-| `CADDYTOWER_VPS_DISK_FREE_WARN_PERCENT` | `15` | Warn when free disk space falls below this percentage |
-| `CADDYTOWER_VPS_WARNING_CHECK_MINUTES` | `15` | RAM/disk warning check interval |
-| `CADDYTOWER_VPS_WARNING_COOLDOWN_MINUTES` | `360` | Minimum minutes between repeated warning emails |
-| `CADDYTOWER_SMTP_HOST` | _(empty)_ | Optional SMTP host for warning emails |
-| `CADDYTOWER_SMTP_PORT` | `587` | Optional SMTP port for warning emails |
-| `CADDYTOWER_SMTP_USERNAME` | _(empty)_ | Optional SMTP username |
-| `CADDYTOWER_SMTP_PASSWORD` | _(empty)_ | Optional SMTP password |
-| `CADDYTOWER_SMTP_FROM` | _(empty)_ | Optional warning email sender |
-| `CADDYTOWER_SMTP_TO` | _(empty)_ | Optional warning email recipient |
+1. **Welcome** — what CaddyTower does.
+2. **Domain** — set the root domain and origin hostname (or IP) in Settings.
+   Cloudflare points your subdomains at this origin.
+3. **GitHub** — if you configured a GitHub App, install it and connect.
+4. **Deploy** — either:
+   - **Import from GitHub** → pick a repo. CaddyTower detects the root
+     `Dockerfile`, the first `EXPOSE` port, and an existing image-publishing
+     workflow. If no workflow exists, it can open a PR that adds
+     `.github/workflows/caddytower-deploy.yml`. The generated workflow builds
+     to GHCR and pings `/api/webhooks/deploy/{slug}` after each push.
+   - **Manual project** → enter any image such as
+     `ghcr.io/owner/app:latest`. Subdomain, internal port, and env are
+     captured inline.
 
-The container image overrides `CADDYTOWER_DATA_DIR` to `/data`.
+From there, each project gets its own page with redeploy, env editor, custom
+domains, deploy history, rollback, live logs, runtime stats, and (optional)
+health checks. Destructive actions use confirmation dialogs, and common
+errors render with next-step hints.
 
-For production exposure, `CADDYTOWER_PUBLIC_BASE_URL` must use HTTPS and
-`CADDYTOWER_MASTER_KEY` must be set so project environment values, database
-credentials, Cloudflare tokens, and TOTP secrets are encrypted at rest.
+## Two paths after setup
 
-The dashboard shows VPS RAM and disk usage. Email warning delivery is optional
-and only active when `CADDYTOWER_SMTP_HOST`, `CADDYTOWER_SMTP_FROM`, and
-`CADDYTOWER_SMTP_TO` are configured.
+| If you want… | Use |
+| --- | --- |
+| One-click deploy from an existing GitHub repo | **Import from GitHub** |
+| Deploy an image you already publish elsewhere | **Manual project** |
+| Manage an already-running container on this VPS | **Adopt** (Settings) |
+
+Repositories that depend on `docker-compose.yml` are intentionally pushed
+back to the manual flow — CaddyTower imports single-image GHCR projects, not
+compose stacks.
+
+## Essential environment variables
+
+The bootstrap script writes a `caddytower.env` file. The values you must set
+before going public:
+
+| Variable | Purpose |
+| --- | --- |
+| `CADDYTOWER_IMAGE` | GHCR image of CaddyTower itself |
+| `CADDYTOWER_PUBLIC_BASE_URL` | Final HTTPS admin URL once Caddy fronts it |
+| `CADDYTOWER_ROOT_DOMAIN` | Root domain that hosts your subdomains |
+| `CADDYTOWER_MASTER_KEY` | 32-byte base64 key (auto-generated on first run); required to encrypt secrets at rest |
+
+To unlock **Import from GitHub**, also set all four of:
+
+```
+CADDYTOWER_GITHUB_APP_ID
+CADDYTOWER_GITHUB_APP_SLUG
+CADDYTOWER_GITHUB_APP_PRIVATE_KEY_PATH
+CADDYTOWER_GITHUB_WEBHOOK_SECRET
+```
+
+Configure the GitHub App with:
+
+- **Install URL:** `https://<github>/apps/<slug>/installations/new`
+- **Webhook URL:** `https://<your-host>/api/webhooks/github`
+- **Webhook secret:** same value as `CADDYTOWER_GITHUB_WEBHOOK_SECRET`
+- **Repo permissions:** Metadata (read), Contents (read+write), Pull requests (read+write)
+- **Events:** `installation`, `installation_repositories`
+
+Mount the App's private key into the container and point
+`CADDYTOWER_GITHUB_APP_PRIVATE_KEY_PATH` at it.
+
+Backups, SMTP warnings, GHES base URLs, and the full table of tunables are
+documented in [`deploy/caddytower.env.example`](deploy/caddytower.env.example).
+
+## Local development
+
+```bash
+go run ./cmd/caddytower
+# then open http://localhost:8080
+```
+
+Tests:
+
+```bash
+CGO_ENABLED=0 go test ./...
+```
 
 ## Security notes
 
-- Keep the controller bound to localhost or reachable only through Caddy; never
-  publish the container port directly to the internet.
-- The Docker socket mount gives CaddyTower administrative control over Docker on
-  the host. Only run this controller for trusted administrators.
-- CaddyTower only trusts `X-Forwarded-For`/`X-Real-IP` when the immediate peer is
-  a loopback or private-network proxy, which prevents direct clients from
-  spoofing login and webhook rate-limit identities.
-- Webhook requests must include `X-Signature: sha256=<hex HMAC>` over the raw
-  body using the per-project webhook secret.
-- Backups are disabled by default because archives can grow quickly when shared
-  database dumps are included.
+- Never expose the controller's port directly. Front it with Caddy and keep it
+  on the loopback or the Docker `edge` network.
+- The Docker socket mount gives CaddyTower full control of the host's Docker.
+  Only run it for trusted admins.
+- Webhook calls must include `X-Signature: sha256=<hex HMAC>` of the raw body
+  with the per-project secret.
+- TOTP secrets, project env, DB credentials, and Cloudflare tokens are
+  encrypted at rest with `CADDYTOWER_MASTER_KEY`.
+- `X-Forwarded-For` is only trusted from loopback and private peers, so
+  clients cannot spoof rate-limit identities.
 
-## Backups
+## More docs
 
-- **Disabled by default**
-- When enabled, scheduled automatically every day at the configured UTC time
-- Stored under `${CADDYTOWER_DATA_DIR}/backups`
-- Each archive includes:
-  - `state.db` from SQLite
-  - optional `postgres.sql` when the shared Postgres engine exists
-  - optional `mariadb.sql` when the shared MariaDB engine exists
-  - `metadata.json` with the snapshot timestamp and trigger
-- Old archives are pruned after the configured retention period
-- The dashboard shows whether backups are enabled and supports **Run backup now** only when enabled
+- [`docs/MIGRATION.md`](docs/MIGRATION.md) — cutover runbook for moving an
+  existing hand-written Caddy setup onto CaddyTower without downtime.
+- [`deploy/caddytower.env.example`](deploy/caddytower.env.example) — every
+  available environment variable with defaults.
 
-## Migration runbook
+## HTTP surface (for reference)
 
-Use this sequence to move the live VPS from the handwritten shared Caddy setup to CaddyTower-managed routes without dropping existing subdomains.
-
-1. **Prepare the controller**
-    - Build/push the current image to GHCR.
-    - On a fresh VPS, install Docker (including the Compose plugin).
-    - Copy `deploy/docker-compose.caddytower.yml`, `deploy/caddytower.env.example`, `deploy/Caddyfile`, and `scripts/bootstrap-caddytower.sh` to the VPS.
-    - Set `CADDYTOWER_IMAGE`, HTTPS `CADDYTOWER_PUBLIC_BASE_URL`, and `CADDYTOWER_ROOT_DOMAIN` in `caddytower.env`.
-
-2. **Boot CaddyTower beside the current stack**
-   - Run `./scripts/bootstrap-caddytower.sh /opt/caddytower`.
-   - Confirm the `caddytower` container joins the `edge` network.
-   - If `shared-caddy` or `watchtower` are missing, the bootstrap script starts bundled replacements automatically.
-   - If you already have a live `shared-caddy` stack, keep it untouched at this stage.
-
-3. **Tunnel in and finish first-time setup**
-   - Open an SSH tunnel to `127.0.0.1:8080`.
-   - Complete `/setup`, then save deployment settings in the dashboard.
-   - Enter the same root domain and origin hostname currently used by the shared Caddy setup.
-
-4. **Import the current workload**
-   - Use **Adopt existing containers** from the dashboard.
-   - Verify imported projects match the running containers, images, and ports.
-   - Open each adopted project and confirm subdomains, published ports, env vars, and webhook secrets look sane.
-
-5. **Take a safety snapshot**
-   - If backups are enabled, use **Run backup now** in the dashboard.
-   - Download the generated archive locally before changing Caddy ownership.
-   - Keep a copy of the current `Caddyfile.shared` as an extra rollback artifact.
-
-6. **Hand route ownership to the Admin API**
-   - Ensure the imported web projects cover every hostname you want CaddyTower to own.
-   - Trigger a redeploy for one low-risk adopted web project first and verify the route still resolves correctly.
-   - Once confirmed, let CaddyTower reconcile the rest of the managed hosts.
-   - Because managed routes are merged into the current JSON config, unmanaged Caddy routes remain in place.
-
-7. **Clean up the old manual path**
-   - After verifying all adopted hosts work through CaddyTower, stop editing `Caddyfile.shared`.
-   - Remove legacy per-app Caddyfile fragments only after their matching projects are visible and healthy in the dashboard.
-   - Keep the old file around as `.bak` until you have at least one successful nightly backup.
-
-8. **Rollback if needed**
-   - If a migrated hostname breaks, stop the affected CaddyTower project from the dashboard or container layer.
-   - Restore the previous Caddyfile-based route from the saved backup copy.
-   - Redeploy the original app container if the imported settings drifted from the live configuration.
-
-## Endpoints
-
-- `/` — scaffold landing page
-- `/setup` — first-admin bootstrap
-- `/login` — password + TOTP login
-- `/backups/{name}` — authenticated backup download
-- `/projects/{projectID}/logs/stream` — authenticated live log stream (SSE)
-- `/api/webhooks/deploy/{slug}` — signed redeploy webhook
-- `/healthz` — liveness probe
-- `/readyz` — readiness probe
-- `/-/version` — build metadata as JSON
+- `/` dashboard · `/setup` first admin · `/login` password + TOTP
+- `/settings` GitHub status, VPS health, backups, adoption, audit log
+- `/projects/import` GitHub import wizard · `/github/install` install redirect
+- `/projects/{id}` operations page
+- `/projects/{id}/logs/stream` and `/events/stream` SSE
+- `/api/webhooks/deploy/{slug}` signed redeploy webhook
+- `/api/webhooks/github` signed GitHub App webhook
+- `/healthz` · `/readyz` · `/-/version`

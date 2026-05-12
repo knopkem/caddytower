@@ -18,6 +18,12 @@ type Config struct {
 	RootDomain                string
 	DockerHost                string
 	MasterKey                 string
+	GitHubAppID               int64
+	GitHubAppSlug             string
+	GitHubAppPrivateKeyPath   string
+	GitHubWebhookSecret       string
+	GitHubAPIBaseURL          string
+	GitHubWebBaseURL          string
 	BackupsEnabled            bool
 	BackupsRetentionDays      int
 	BackupsScheduleUTC        string
@@ -41,14 +47,24 @@ func Load() (Config, error) {
 
 func LoadFromLookup(lookup func(string) (string, bool)) (Config, error) {
 	cfg := Config{
-		HTTPAddr:      envOrDefault(lookup, "CADDYTOWER_HTTP_ADDR", ":8080"),
-		PublicBaseURL: envOrDefault(lookup, "CADDYTOWER_PUBLIC_BASE_URL", "http://localhost:8080"),
-		DataDir:       envOrDefault(lookup, "CADDYTOWER_DATA_DIR", "./var"),
-		CaddyAdminURL: envOrDefault(lookup, "CADDYTOWER_CADDY_ADMIN_URL", "http://shared-caddy:2019"),
-		RootDomain:    strings.TrimSpace(envOrDefault(lookup, "CADDYTOWER_ROOT_DOMAIN", "")),
-		DockerHost:    strings.TrimSpace(envOrDefault(lookup, "DOCKER_HOST", "")),
-		MasterKey:     strings.TrimSpace(envOrDefault(lookup, "CADDYTOWER_MASTER_KEY", "")),
+		HTTPAddr:                envOrDefault(lookup, "CADDYTOWER_HTTP_ADDR", ":8080"),
+		PublicBaseURL:           envOrDefault(lookup, "CADDYTOWER_PUBLIC_BASE_URL", "http://localhost:8080"),
+		DataDir:                 envOrDefault(lookup, "CADDYTOWER_DATA_DIR", "./var"),
+		CaddyAdminURL:           envOrDefault(lookup, "CADDYTOWER_CADDY_ADMIN_URL", "http://shared-caddy:2019"),
+		RootDomain:              strings.TrimSpace(envOrDefault(lookup, "CADDYTOWER_ROOT_DOMAIN", "")),
+		DockerHost:              strings.TrimSpace(envOrDefault(lookup, "DOCKER_HOST", "")),
+		MasterKey:               strings.TrimSpace(envOrDefault(lookup, "CADDYTOWER_MASTER_KEY", "")),
+		GitHubAppSlug:           strings.TrimSpace(envOrDefault(lookup, "CADDYTOWER_GITHUB_APP_SLUG", "")),
+		GitHubAppPrivateKeyPath: strings.TrimSpace(envOrDefault(lookup, "CADDYTOWER_GITHUB_APP_PRIVATE_KEY_PATH", "")),
+		GitHubWebhookSecret:     strings.TrimSpace(envOrDefault(lookup, "CADDYTOWER_GITHUB_WEBHOOK_SECRET", "")),
+		GitHubAPIBaseURL:        envOrDefault(lookup, "CADDYTOWER_GITHUB_API_BASE_URL", "https://api.github.com"),
+		GitHubWebBaseURL:        envOrDefault(lookup, "CADDYTOWER_GITHUB_WEB_BASE_URL", "https://github.com"),
 	}
+	appID, err := envInt64OrDefault(lookup, "CADDYTOWER_GITHUB_APP_ID", 0)
+	if err != nil {
+		return Config{}, err
+	}
+	cfg.GitHubAppID = appID
 	backupsEnabled, err := envBoolOrDefault(lookup, "CADDYTOWER_BACKUPS_ENABLED", false)
 	if err != nil {
 		return Config{}, err
@@ -117,6 +133,15 @@ func LoadFromLookup(lookup func(string) (string, bool)) (Config, error) {
 	if err := validateURL("CADDYTOWER_CADDY_ADMIN_URL", cfg.CaddyAdminURL); err != nil {
 		return Config{}, err
 	}
+	if err := validateURL("CADDYTOWER_GITHUB_API_BASE_URL", cfg.GitHubAPIBaseURL); err != nil {
+		return Config{}, err
+	}
+	if err := validateURL("CADDYTOWER_GITHUB_WEB_BASE_URL", cfg.GitHubWebBaseURL); err != nil {
+		return Config{}, err
+	}
+	if err := validateGitHubAppConfig(cfg); err != nil {
+		return Config{}, err
+	}
 
 	if cfg.BackupsRetentionDays < 1 {
 		return Config{}, fmt.Errorf("CADDYTOWER_BACKUPS_RETENTION_DAYS must be at least 1")
@@ -154,6 +179,13 @@ func (c Config) BackupDir() string {
 
 func (c Config) WarningEmailConfigured() bool {
 	return c.SMTPHost != "" && c.SMTPFrom != "" && c.SMTPTo != ""
+}
+
+func (c Config) GitHubConfigured() bool {
+	return c.GitHubAppID > 0 &&
+		c.GitHubAppSlug != "" &&
+		c.GitHubAppPrivateKeyPath != "" &&
+		c.GitHubWebhookSecret != ""
 }
 
 func envOrDefault(lookup func(string) (string, bool), key, fallback string) string {
@@ -202,6 +234,19 @@ func envIntOrDefault(lookup func(string) (string, bool), key string, fallback in
 	return parsed, nil
 }
 
+func envInt64OrDefault(lookup func(string) (string, bool), key string, fallback int64) (int64, error) {
+	value, ok := lookup(key)
+	if !ok || strings.TrimSpace(value) == "" {
+		return fallback, nil
+	}
+
+	parsed, err := strconv.ParseInt(strings.TrimSpace(value), 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("%s must be an integer", key)
+	}
+	return parsed, nil
+}
+
 func validateURL(name, raw string) error {
 	parsed, err := url.Parse(raw)
 	if err != nil {
@@ -235,6 +280,38 @@ func validatePublicExposure(publicBaseURL, masterKey string) error {
 		return fmt.Errorf("CADDYTOWER_MASTER_KEY is required for non-local public URLs")
 	}
 
+	return nil
+}
+
+func validateGitHubAppConfig(cfg Config) error {
+	values := []string{
+		strconv.FormatInt(cfg.GitHubAppID, 10),
+		cfg.GitHubAppSlug,
+		cfg.GitHubAppPrivateKeyPath,
+		cfg.GitHubWebhookSecret,
+	}
+	anySet := false
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" && value != "0" {
+			anySet = true
+			break
+		}
+	}
+	if !anySet {
+		return nil
+	}
+	if cfg.GitHubAppID <= 0 {
+		return fmt.Errorf("CADDYTOWER_GITHUB_APP_ID must be set when GitHub App integration is enabled")
+	}
+	if cfg.GitHubAppSlug == "" {
+		return fmt.Errorf("CADDYTOWER_GITHUB_APP_SLUG must be set when GitHub App integration is enabled")
+	}
+	if cfg.GitHubAppPrivateKeyPath == "" {
+		return fmt.Errorf("CADDYTOWER_GITHUB_APP_PRIVATE_KEY_PATH must be set when GitHub App integration is enabled")
+	}
+	if cfg.GitHubWebhookSecret == "" {
+		return fmt.Errorf("CADDYTOWER_GITHUB_WEBHOOK_SECRET must be set when GitHub App integration is enabled")
+	}
 	return nil
 }
 

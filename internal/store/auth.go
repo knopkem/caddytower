@@ -188,3 +188,17 @@ func nullableString(value string) any {
 	}
 	return value
 }
+
+func nullableInt64(value int64) any {
+	if value == 0 {
+		return nil
+	}
+	return value
+}
+
+func nullableInt(value int) any {
+	if value == 0 {
+		return nil
+	}
+	return value
+}
