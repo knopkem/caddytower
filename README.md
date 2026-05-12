@@ -30,7 +30,7 @@ You need a VPS with **Docker (with the Compose plugin)**. Nothing else.
 
 ```bash
 # 1. Pull the repo onto the VPS (or just the deploy/ + scripts/ directories).
-git clone https://github.com/your-org/caddytower /opt/caddytower-src
+git clone https://github.com/knopkem/caddytower /opt/caddytower-src
 cd /opt/caddytower-src
 
 # 2. Run the bootstrap script. It checks Docker, creates the `edge` network,
