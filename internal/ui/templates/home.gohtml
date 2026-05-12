@@ -17,15 +17,10 @@
           <h1>{{if .Headline}}{{.Headline}}{{else}}CaddyTower dashboard{{end}}</h1>
           <p class="lede">
             Ship Docker projects behind shared Caddy without living in config files.
-            The dashboard stays focused on your apps; settings and VPS operations live one click away.
+            The dashboard stays focused on your apps, host health, and first-response actions; settings handles deeper configuration.
           </p>
         </div>
         <div class="toolbar-actions">
-          <button type="button" class="secondary" data-dialog-open="onboarding-dialog">Guided start</button>
-          {{if .GitHubConfigured}}
-          <a class="button-link secondary" href="/projects/import">{{if .GitHubConnected}}Import from GitHub{{else}}Connect GitHub{{end}}</a>
-          {{end}}
-          <button type="button" data-dialog-open="project-dialog">Manual project</button>
           <a class="button-link secondary" href="/settings">Settings</a>
           {{if .CSRFToken}}
           <form method="post" action="/logout" class="inline-form">
@@ -45,19 +40,19 @@
             <h2>{{if .NeedsSetup}}Finish the first-run flow{{else}}Your deployment cockpit{{end}}</h2>
             <p>
               {{if .NeedsSetup}}
-              Configure the domain once, then create or adopt projects from a cleaner dashboard.
+              Configure the domain once, then start creating projects from a cleaner dashboard.
               {{else}}
-              Manage live projects here, and jump to settings only when you need DNS, backups, adoption, or host-level operations.
+              Manage live projects here, keep an eye on host headroom, and jump to settings when you need DNS, GitHub wiring, or backups.
               {{end}}
             </p>
           </div>
           <details class="help">
-            <summary>How this works</summary>
-            <div class="help-body">
-              <p><strong>Dashboard:</strong> create projects, open apps, redeploy, and jump into details.</p>
-              <p><strong>Settings:</strong> domain setup, VPS status, backups, adoption, and controller/runtime information.</p>
-            </div>
-          </details>
+              <summary>How this works</summary>
+              <div class="help-body">
+                <p><strong>Dashboard:</strong> create projects, open apps, redeploy, and jump into details.</p>
+              <p><strong>Settings:</strong> domain setup, GitHub wiring, backups, and controller/runtime information.</p>
+              </div>
+            </details>
         </div>
         <div class="summary-grid hero-summary">
           <article class="summary-card">
@@ -75,9 +70,23 @@
             </p>
           </article>
           <article class="summary-card">
+            <h3>Public admin URL</h3>
+            <p>
+              {{if .PublicURLReady}}
+              Live at <span class="inline-code">{{.EffectivePublicBaseURL}}</span>.
+              {{else if not .DomainConfigured}}
+              Finish the domain settings first so CaddyTower can compose the public admin hostname.
+              {{else}}
+              Use <span class="inline-code">{{.EffectivePublicBaseURL}}</span> as the admin hostname. {{if and .Settings.CloudflareTokenPresent .Settings.CloudflareZoneID .Settings.OriginHostname}}Cloudflare DNS automation can create that record for you.{{else if .Settings.OriginHostname}}Create the DNS record with your provider so it points to <span class="inline-code">{{.Settings.OriginHostname}}</span>.{{else}}Add the origin hostname first so CaddyTower knows where the admin hostname should point.{{end}}
+              {{end}}
+            </p>
+          </article>
+          <article class="summary-card">
             <h3>GitHub import</h3>
             <p>
-              {{if .GitHubConnected}}
+              {{if not .PublicURLReady}}
+              Wait until the public HTTPS admin URL is reachable. GitHub setup comes after the admin hostname is live.
+              {{else if .GitHubConnected}}
               Ready to import repositories through the guided GitHub flow.
               {{else if .GitHubConfigured}}
               Connect the GitHub App in Settings, then import repositories here.
@@ -87,27 +96,67 @@
             </p>
           </article>
         </div>
-        <div class="actions section-spacer">
-          {{if .GitHubConfigured}}
-          <a class="button-link" href="/projects/import">{{if .GitHubConnected}}Import from GitHub{{else}}Connect GitHub{{end}}</a>
-          {{end}}
-          <button type="button" data-dialog-open="project-dialog">Create manual project</button>
-          <button type="button" class="secondary" data-dialog-open="onboarding-dialog">Open onboarding</button>
-          <a class="button-link secondary" href="/settings">Open settings</a>
+      </section>
+
+      <section class="card section">
+        <div class="card-header">
+          <div class="card-title">
+            <h2>VPS status</h2>
+            <p>Keep RAM and disk headroom visible from the dashboard while you operate projects.</p>
+          </div>
+          <details class="help">
+            <summary>Alerts</summary>
+            <div class="help-body">
+              <p>Warnings trigger below {{.VPSStatus.RAMThreshold}}% free RAM or {{.VPSStatus.DiskThreshold}}% free disk.</p>
+              <p>Email alerts are {{if .VPSStatus.EmailConfigured}}enabled for {{.VPSStatus.EmailTo}}{{else}}not configured; set SMTP environment variables to enable them{{end}}.</p>
+            </div>
+          </details>
         </div>
+        {{if .VPSStatus.Available}}
+        <dl class="stats">
+          <div><dt>RAM used</dt><dd>{{.VPSStatus.MemorySummary}}</dd></div>
+          <div><dt>RAM free</dt><dd>{{.VPSStatus.MemoryFreePct}}%</dd></div>
+          <div><dt>Disk used</dt><dd>{{.VPSStatus.DiskSummary}}</dd></div>
+          <div><dt>Disk free</dt><dd>{{.VPSStatus.DiskFreePct}}%</dd></div>
+        </dl>
+        <div class="meter-stack">
+          <div>
+            <div class="meter-label"><span>RAM</span><span>{{.VPSStatus.MemoryUsedPct}}%</span></div>
+            <meter min="0" max="100" low="75" high="90" optimum="35" value="{{.VPSStatus.MemoryUsedPct}}"></meter>
+          </div>
+          <div>
+            <div class="meter-label"><span>Disk</span><span>{{.VPSStatus.DiskUsedPct}}%</span></div>
+            <meter min="0" max="100" low="75" high="90" optimum="35" value="{{.VPSStatus.DiskUsedPct}}"></meter>
+          </div>
+        </div>
+        {{if .VPSStatus.Warnings}}
+        <div class="warning-list">
+          {{range .VPSStatus.Warnings}}<p>{{.}}</p>{{end}}
+        </div>
+        {{end}}
+        <p class="muted section-spacer">Checked {{.VPSStatus.CheckedAt}} on <span class="mono">{{.VPSStatus.DiskPath}}</span>.</p>
+        {{else}}
+        <div class="empty-state">
+          <p><strong>Status unavailable.</strong></p>
+          <p>{{.VPSStatus.ErrorMessage}}</p>
+        </div>
+        {{end}}
       </section>
 
       {{if .NeedsSetup}}
       <section class="card section onboarding-checklist-card">
         <div class="card-header">
           <div class="card-title">
-            <h2>Recommended next steps</h2>
-            <p>Follow this checklist to get from a fresh install to the first live app quickly.</p>
+            <h2>Finish first-run setup</h2>
+            <p>Follow this order: domain settings, public admin URL, optional GitHub wiring, then the first project.</p>
+          </div>
+          <div class="toolbar">
+            <button type="button" class="secondary" data-dialog-open="onboarding-dialog">Resume setup guide</button>
           </div>
           <details class="help">
             <summary>Help</summary>
             <div class="help-body">
-              <p>This checklist mirrors the guided onboarding wizard: welcome, domain setup, GitHub connection, and first deploy.</p>
+              <p>This checklist mirrors the real bootstrap order and stays visible even after the modal is closed.</p>
             </div>
           </details>
         </div>
@@ -125,25 +174,44 @@
               </p>
             </div>
           </article>
-          <article class="check-item">
+          <article class="check-item {{if .PublicURLReady}}is-done{{end}}">
             <span class="check-item-badge">2</span>
+            <div>
+              <h3>Make the public admin hostname reachable</h3>
+              <p>
+                {{if .PublicURLReady}}
+                CaddyTower is already reachable at <span class="inline-code">{{.EffectivePublicBaseURL}}</span>.
+                {{else if not .DomainConfigured}}
+                Finish step 1 first. Once the root domain and origin are saved, CaddyTower will use <span class="inline-code">{{.SuggestedPublicBaseURL}}</span>.
+                {{else if and .Settings.CloudflareTokenPresent .Settings.CloudflareZoneID .Settings.OriginHostname}}
+                CaddyTower already knows it should live at <span class="inline-code">{{.EffectivePublicBaseURL}}</span>. Save the domain settings and it can keep the Cloudflare DNS record for <span class="inline-code">{{.PublicAdminHost}}</span> pointed at <span class="inline-code">{{.Settings.OriginHostname}}</span>.
+                {{else}}
+                CaddyTower already manages the shared Caddy route for <span class="inline-code">{{.PublicAdminHost}}</span>. Create a DNS record with your provider so <span class="inline-code">{{.PublicAdminHost}}</span> points to <span class="inline-code">{{if .Settings.OriginHostname}}{{.Settings.OriginHostname}}{{else}}your VPS origin{{end}}</span>.
+                {{end}}
+              </p>
+            </div>
+          </article>
+          <article class="check-item {{if .GitHubConnected}}is-done{{end}}">
+            <span class="check-item-badge">3</span>
             <div>
               <h3>Connect GitHub</h3>
               <p>
-                {{if .GitHubConnected}}
+                {{if not .PublicURLReady}}
+                Blocked until the final public HTTPS admin URL is live.
+                {{else if .GitHubConnected}}
                 GitHub is connected and ready for the import wizard.
                 {{else if .GitHubConfigured}}
                 Finish installing the GitHub App to unlock repo import.
                 {{else}}
-                Most installs do this later in Settings after the first login, once the admin URL is public.
+                Optional: configure the GitHub App in Settings if you want repo-based imports.
                 {{end}}
               </p>
             </div>
           </article>
           <article class="check-item {{if gt (len .Projects) 0}}is-done{{end}}">
-            <span class="check-item-badge">3</span>
+            <span class="check-item-badge">4</span>
             <div>
-              <h3>Create or adopt the first project</h3>
+              <h3>Create the first project</h3>
               <p>
                 {{if gt (len .Projects) 0}}
                 You already have managed projects in CaddyTower.
@@ -151,7 +219,7 @@
                 {{if .GitHubConnected}}
                 Start with the GitHub import wizard or use a manual image if you already have one.
                 {{else}}
-                Start with a manual image or use adoption from the Settings page if services already run on this VPS.
+                Start with a manual image now, then add GitHub later if you want repo-based imports.
                 {{end}}
                 {{end}}
               </p>
@@ -171,13 +239,11 @@
             <details class="help">
               <summary>Help</summary>
               <div class="help-body">
-                <p>Use <strong>Manual project</strong> for any existing image such as <span class="inline-code">ghcr.io/owner/app:latest</span>.</p>
-                {{if .GitHubConfigured}}<p>Use <strong>Import from GitHub</strong> to pick a repository, auto-detect its Dockerfile, and scaffold the deploy workflow.</p>{{end}}
-                <p>For existing containers on the VPS, use adoption from the Settings page so you do not redeploy unnecessarily.</p>
+                <p>Use <strong>Add project</strong> to choose between a manual image deploy and the GitHub import flow.</p>
+                {{if .GitHubConfigured}}<p>If GitHub is connected, the add-project dialog can send you straight into the repo import flow.</p>{{end}}
               </div>
             </details>
-            {{if .GitHubConfigured}}<a class="button-link secondary" href="/projects/import">Import from GitHub</a>{{end}}
-            <button type="button" data-dialog-open="project-dialog">Create project</button>
+            <button type="button" data-dialog-open="project-dialog">Add project</button>
           </div>
         </div>
 
@@ -219,16 +285,11 @@
           <p><strong>No projects yet.</strong></p>
           <p>
             {{if .GitHubConnected}}
-            Start with the GitHub import wizard, a manual image, or adoption for services already running on this VPS.
+            Use <strong>Add project</strong> above to choose GitHub import or a manual image deploy.
             {{else}}
-            Right now, the fastest path is a manual image or adopting services already running on the VPS.
+            Use <strong>Add project</strong> above to start with a manual image deploy.
             {{end}}
           </p>
-          <div class="actions section-spacer">
-            {{if .GitHubConfigured}}<a class="button-link" href="/projects/import">{{if .GitHubConnected}}Import from GitHub{{else}}Connect GitHub{{end}}</a>{{end}}
-            <button type="button" data-dialog-open="project-dialog">Create manual project</button>
-            <a class="button-link secondary" href="/settings">Adopt existing services</a>
-          </div>
         </div>
         {{end}}
       </section>
@@ -264,17 +325,34 @@
 
           <section class="wizard-step hidden" data-wizard-step>
             <h3>Configure the domain foundation</h3>
-            <p>Before public web projects can work well, CaddyTower should know the root domain and the origin hostname or IP that Cloudflare points to.</p>
+            <p>Before public web projects can work well, CaddyTower should know the root domain and the origin hostname or IP your DNS records point to. Cloudflare automation is optional.</p>
             <div class="checklist section-spacer">
               <article class="check-item {{if .DomainConfigured}}is-done{{end}}">
                 <span class="check-item-badge">✓</span>
-                <div>
-                  <h3>Current status</h3>
-                  <p>
-                    {{if .DomainConfigured}}
-                    Root domain <span class="inline-code">{{.Settings.RootDomain}}</span> and origin <span class="inline-code">{{.Settings.OriginHostname}}</span> are configured.
+                  <div>
+                    <h3>Current status</h3>
+                    <p>
+                      {{if .DomainConfigured}}
+                      Root domain <span class="inline-code">{{.Settings.RootDomain}}</span> and origin <span class="inline-code">{{.Settings.OriginHostname}}</span> are configured.
                     {{else}}
                     Domain setup is incomplete. Open Settings to finish it.
+                    {{end}}
+                  </p>
+                </div>
+              </article>
+              <article class="check-item {{if .PublicURLReady}}is-done{{end}}">
+                <span class="check-item-badge">2</span>
+                <div>
+                  <h3>Public admin URL</h3>
+                  <p>
+                    {{if .PublicURLReady}}
+                    CaddyTower is already running at <span class="inline-code">{{.EffectivePublicBaseURL}}</span>.
+                    {{else if not .DomainConfigured}}
+                    Finish the domain settings first. CaddyTower will then use <span class="inline-code">{{.SuggestedPublicBaseURL}}</span> as the admin URL.
+                    {{else if and .Settings.CloudflareTokenPresent .Settings.CloudflareZoneID .Settings.OriginHostname}}
+                    CaddyTower already knows its public admin URL should be <span class="inline-code">{{.EffectivePublicBaseURL}}</span>. With Cloudflare configured, saving the domain settings can keep the DNS record updated automatically.
+                    {{else}}
+                    CaddyTower will serve <span class="inline-code">{{.EffectivePublicBaseURL}}</span> once <span class="inline-code">{{.PublicAdminHost}}</span> points at <span class="inline-code">{{if .Settings.OriginHostname}}{{.Settings.OriginHostname}}{{else}}your VPS origin{{end}}</span>.
                     {{end}}
                   </p>
                 </div>
@@ -290,7 +368,9 @@
           <section class="wizard-step hidden" data-wizard-step>
             <h3>GitHub import works today</h3>
             <p>
-              {{if .GitHubConnected}}
+              {{if not .PublicURLReady}}
+              GitHub setup is intentionally blocked until CaddyTower is reachable at its final public HTTPS admin URL. Finish the admin hostname step first, then come back here.
+              {{else if .GitHubConnected}}
               GitHub is already connected. Pick a repository, let CaddyTower inspect its Docker setup, and create the project with as little manual entry as possible.
               {{else if .GitHubConfigured}}
               Connect the GitHub App once, then CaddyTower can pick a repo, inspect its Docker setup, and guide the first deploy for you.
@@ -300,12 +380,14 @@
             </p>
             <div class="summary-grid section-spacer">
               <article class="summary-card"><h3>What CaddyTower handles</h3><p>Repo picker, Dockerfile and port detection, pending-image imports, generated GHCR workflow PRs when needed, and the deploy webhook snippet.</p></article>
-              <article class="summary-card"><h3>Current status</h3><p>{{if .GitHubConnected}}GitHub is connected and ready for the import flow.{{else if .GitHubConfigured}}GitHub App config is present. Install it for an account or org to unlock import.{{else}}GitHub App config is missing on this install, so import is not available yet.{{end}}</p></article>
+              <article class="summary-card"><h3>Current status</h3><p>{{if not .DomainConfigured}}Blocked until the domain settings are complete.{{else if not .PublicURLReady}}Blocked until <span class="inline-code">{{.PublicAdminHost}}</span> is reachable over HTTPS.{{else if .GitHubConnected}}GitHub is connected and ready for the import flow.{{else if .GitHubConfigured}}GitHub App config is present. Install it for an account or org to unlock import.{{else}}GitHub App config is missing on this install, so import is not available yet.{{end}}</p></article>
             </div>
             <div class="actions section-spacer">
               <button type="button" class="secondary" data-wizard-back>Back</button>
-              {{if .GitHubConnected}}
-              <a class="button-link" href="/projects/import">Import from GitHub</a>
+              {{if not .PublicURLReady}}
+              <a class="button-link secondary" href="/settings">Open settings</a>
+              {{else if .GitHubConnected}}
+              <a class="button-link" href="/?open=project">Open add project</a>
               {{else if .GitHubConfigured}}
               <a class="button-link" href="/github/install">Connect on GitHub</a>
               <a class="button-link secondary" href="/settings">Open settings</a>
@@ -318,10 +400,10 @@
 
           <section class="wizard-step hidden" data-wizard-step>
             <h3>You’re ready to ship</h3>
-            <p>Create a manual project now, or head into Settings if you want to configure DNS, adopt running services, or review VPS health first.</p>
+            <p>Create a project now, or head into Settings if you want to configure DNS, GitHub wiring, or review VPS health first.</p>
             <div class="actions section-spacer">
               <button type="button" class="secondary" data-wizard-back>Back</button>
-              <a class="button-link" href="/?open=project">Create manual project</a>
+              <a class="button-link" href="/?open=project">Open add project</a>
               <a class="button-link secondary" href="/settings">Go to settings</a>
             </div>
           </section>
@@ -352,13 +434,48 @@
         <article class="dialog-card">
           <div class="section-header">
             <div class="section-title">
-              <h2>Create project</h2>
-              <p>Deploy a web app or raw network service from a container image.</p>
+              <h2>Add project</h2>
+              <p>Choose whether this project should start from a manual image deploy or the GitHub import flow.</p>
             </div>
             <button type="button" class="secondary" data-dialog-close>Close</button>
           </div>
-          <form method="post" action="/projects" class="stack" data-project-type-form data-image-check-form>
+          <div class="summary-grid section-spacer">
+            <article class="summary-card">
+              <h3>Manual image deploy</h3>
+              <p>Use this for any existing image such as <span class="inline-code">ghcr.io/owner/app:latest</span>.</p>
+              <div class="actions section-spacer">
+                <a class="button-link secondary" href="#manual-project-form">Use manual form</a>
+              </div>
+            </article>
+            <article class="summary-card">
+              <h3>GitHub import</h3>
+              <p>
+                {{if not .PublicURLReady}}
+                {{if not .DomainConfigured}}Finish the domain settings first.{{else}}Finish the public admin URL step first. GitHub import stays disabled until that hostname is live.{{end}}
+                {{else if .GitHubConnected}}
+                Pick a repository, let CaddyTower inspect its Docker setup, and scaffold the deploy workflow.
+                {{else if .GitHubConfigured}}
+                Finish connecting the GitHub App first, then come back here to import repositories.
+                {{else}}
+                Configure GitHub in Settings first if you want repository-based project creation.
+                {{end}}
+              </p>
+              <div class="actions section-spacer">
+                {{if not .PublicURLReady}}
+                <a class="button-link secondary" href="/settings">Finish admin hostname setup first</a>
+                {{else if .GitHubConnected}}
+                <a class="button-link" href="/projects/import">Import from GitHub</a>
+                {{else if .GitHubConfigured}}
+                <a class="button-link secondary" href="/github/install">Connect on GitHub</a>
+                {{else}}
+                <a class="button-link secondary" href="/settings">Configure GitHub</a>
+                {{end}}
+              </div>
+            </article>
+          </div>
+          <form id="manual-project-form" method="post" action="/projects" class="stack section-spacer" data-project-type-form data-image-check-form>
             <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+            <h3>Manual image deploy</h3>
             <label class="field">
               <span>Project type</span>
               <select name="project_type" data-project-type>

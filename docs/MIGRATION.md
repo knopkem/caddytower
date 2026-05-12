@@ -38,11 +38,13 @@ CaddyTower-managed routes without dropping existing subdomains.
 - Enter the same root domain and origin hostname currently used by the existing
   shared Caddy setup.
 
-## 4. Import the current workload
+## 4. Recreate the current workload in CaddyTower
 
-- Use **Adopt existing containers** from **Settings**.
-- Verify that imported projects match the running containers, images, and ports.
-- Open each adopted project and confirm:
+- Create each project manually in CaddyTower, or use **GitHub import** for repos
+  that already have a clean image-based workflow.
+- Copy the real image refs, ports, subdomains, and required environment values
+  from the current stack into the new project definitions.
+- Before moving a hostname, open the new project and confirm:
   - subdomains
   - published ports
   - env values
@@ -56,8 +58,8 @@ CaddyTower-managed routes without dropping existing subdomains.
 
 ## 6. Hand route ownership to the Admin API
 
-- Ensure the imported web projects cover every hostname CaddyTower should own.
-- Trigger a redeploy for one low-risk adopted web project first.
+- Ensure the recreated web projects cover every hostname CaddyTower should own.
+- Trigger a redeploy for one low-risk web project first.
 - Verify that the route still resolves correctly.
 - Once confirmed, let CaddyTower reconcile the rest of the managed hosts.
 
@@ -66,7 +68,7 @@ routes stay in place.
 
 ## 7. Clean up the old manual path
 
-- After verifying adopted hosts work through CaddyTower, stop editing
+- After verifying the migrated hosts work through CaddyTower, stop editing
   `Caddyfile.shared`.
 - Remove legacy per-app Caddyfile fragments only after their matching projects
   are visible and healthy in the dashboard.
@@ -78,5 +80,5 @@ routes stay in place.
 - If a migrated hostname breaks, stop the affected CaddyTower project from the
   dashboard or container layer.
 - Restore the previous Caddyfile-based route from the saved backup copy.
-- Redeploy the original app container if the imported settings drifted from the
+- Redeploy the original app container if the recreated settings drifted from the
   live configuration.

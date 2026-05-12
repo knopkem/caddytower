@@ -2,7 +2,6 @@ package projects
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"io"
 	"log/slog"
@@ -67,10 +66,10 @@ func TestCreateWebProjectDeploysAndPersists(t *testing.T) {
 	if docker.recreateCount != 1 {
 		t.Fatalf("recreateCount = %d", docker.recreateCount)
 	}
-	if len(caddy.managedHosts) != 1 || caddy.managedHosts[0] != "demo.example.com" {
+	if len(caddy.managedHosts) != 2 || caddy.managedHosts[0] != "caddytower.example.com" || caddy.managedHosts[1] != "demo.example.com" {
 		t.Fatalf("managed hosts = %#v", caddy.managedHosts)
 	}
-	if cloudflareFactory.client.upsertCount != 1 {
+	if cloudflareFactory.client.upsertCount != 2 {
 		t.Fatalf("upsertCount = %d", cloudflareFactory.client.upsertCount)
 	}
 
@@ -80,6 +79,75 @@ func TestCreateWebProjectDeploysAndPersists(t *testing.T) {
 	}
 	if stored.Env["API_KEY"] != "secret" {
 		t.Fatalf("stored env = %#v", stored.Env)
+	}
+}
+
+func TestSaveSettingsPreservesInstallerRootDomain(t *testing.T) {
+	t.Parallel()
+
+	stateStore := openProjectsStore(t)
+	docker := &fakeDocker{}
+	svc := New(config.Config{RootDomain: "pacsnode.com"}, stateStore, nil, docker, &fakeCaddy{}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+
+	if err := svc.SaveSettings(context.Background(), SettingsInput{
+		OriginHostname: "vps212846.vps.ovh.ca",
+	}, ""); err != nil {
+		t.Fatalf("SaveSettings() error = %v", err)
+	}
+
+	dashboard, err := svc.Dashboard(context.Background())
+	if err != nil {
+		t.Fatalf("Dashboard() error = %v", err)
+	}
+	if dashboard.Settings.RootDomain != "pacsnode.com" {
+		t.Fatalf("root domain = %q, want installer fallback", dashboard.Settings.RootDomain)
+	}
+}
+
+func TestSaveSettingsReconcilesAdminRouteAndDNS(t *testing.T) {
+	t.Parallel()
+
+	stateStore := openProjectsStore(t)
+	secretSvc, err := secrets.NewOptionalFromBase64("AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=")
+	if err != nil {
+		t.Fatalf("NewOptionalFromBase64() error = %v", err)
+	}
+
+	docker := &fakeDocker{}
+	caddy := &fakeCaddy{}
+	cloudflareFactory := &fakeCloudflareFactory{}
+	svc := New(config.Config{RootDomain: "pacsnode.com"}, stateStore, secretSvc, docker, caddy, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	svc.newCloudflare = cloudflareFactory.New
+
+	if err := svc.SaveSettings(context.Background(), SettingsInput{
+		OriginHostname:    "203.0.113.10",
+		CloudflareZoneID:  "zone-1",
+		CloudflareToken:   "token-1",
+		CloudflareProxied: true,
+	}, ""); err != nil {
+		t.Fatalf("SaveSettings() error = %v", err)
+	}
+
+	if len(caddy.managedHosts) != 1 || caddy.managedHosts[0] != "caddytower.pacsnode.com" {
+		t.Fatalf("managed hosts = %#v", caddy.managedHosts)
+	}
+	if cloudflareFactory.client.upsertCount != 1 {
+		t.Fatalf("upsertCount = %d", cloudflareFactory.client.upsertCount)
+	}
+}
+
+func TestRestartControllerRestartsManagedContainer(t *testing.T) {
+	t.Parallel()
+
+	stateStore := openProjectsStore(t)
+	docker := &fakeDocker{}
+	svc := New(config.Config{}, stateStore, nil, docker, &fakeCaddy{}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+
+	if err := svc.RestartController(context.Background(), ""); err != nil {
+		t.Fatalf("RestartController() error = %v", err)
+	}
+	if docker.restartCount != 1 {
+		t.Fatalf("restart count = %d, want 1", docker.restartCount)
 	}
 }
 
@@ -426,7 +494,7 @@ func TestAddAndVerifyProjectDomain(t *testing.T) {
 	if len(project.CustomDomains) != 1 || project.PrimaryDomain != "app.example.org" {
 		t.Fatalf("project domains = %#v / primary=%q", project.CustomDomains, project.PrimaryDomain)
 	}
-	if len(caddy.managedHosts) != 2 {
+	if len(caddy.managedHosts) != 3 {
 		t.Fatalf("managed hosts = %#v", caddy.managedHosts)
 	}
 
@@ -490,48 +558,6 @@ func TestRedeployHealthCheckFailureAutoRollsBack(t *testing.T) {
 	}
 }
 
-func TestAdoptExistingImportsWebContainer(t *testing.T) {
-	t.Parallel()
-
-	stateStore := openProjectsStore(t)
-	docker := &fakeDocker{
-		containers: []dockerx.ContainerSummary{
-			{Name: "cameos-editor", Image: "ghcr.io/example/cameos:latest"},
-		},
-		inspectByName: map[string]dockerx.ContainerInspect{
-			"cameos-editor": {
-				Name:  "cameos-editor",
-				Image: "ghcr.io/example/cameos:latest",
-				Env:   []string{"APP_ENV=prod"},
-			},
-		},
-	}
-	caddy := &fakeCaddy{
-		config: json.RawMessage(`{
-			"apps": {"http": {"servers": {"srv0": {"routes": [
-				{"match":[{"host":["cameos.example.com"]}],"handle":[{"handler":"reverse_proxy","upstreams":[{"dial":"cameos-editor:8080"}]}],"terminal":true}
-			]}}}}
-		}`),
-	}
-	svc := New(config.Config{}, stateStore, nil, docker, caddy, slog.New(slog.NewTextHandler(io.Discard, nil)))
-
-	if err := svc.SaveSettings(context.Background(), SettingsInput{RootDomain: "example.com"}, ""); err != nil {
-		t.Fatalf("SaveSettings() error = %v", err)
-	}
-
-	adopted, err := svc.AdoptExisting(context.Background(), "")
-	if err != nil {
-		t.Fatalf("AdoptExisting() error = %v", err)
-	}
-
-	if len(adopted) != 1 {
-		t.Fatalf("adopted = %#v", adopted)
-	}
-	if adopted[0].Type != "web" || adopted[0].Subdomain != "cameos" || adopted[0].InternalPort != 8080 {
-		t.Fatalf("project = %#v", adopted[0])
-	}
-}
-
 func openProjectsStore(t *testing.T) *store.Store {
 	t.Helper()
 
@@ -550,6 +576,7 @@ func openProjectsStore(t *testing.T) *store.Store {
 
 type fakeDocker struct {
 	recreateCount int
+	restartCount  int
 	removeCount   int
 	lastSpec      dockerx.ContainerSpec
 	logContent    string
@@ -588,6 +615,10 @@ func (f *fakeDocker) ListContainersByLabel(context.Context, string, string) ([]d
 func (f *fakeDocker) ListContainers(context.Context) ([]dockerx.ContainerSummary, error) {
 	return append([]dockerx.ContainerSummary(nil), f.containers...), nil
 }
+func (f *fakeDocker) RestartContainer(context.Context, string) error {
+	f.restartCount++
+	return nil
+}
 func (f *fakeDocker) RemoveContainer(context.Context, string) error {
 	f.removeCount++
 	return nil
@@ -601,14 +632,6 @@ func (f *fakeDocker) Exec(context.Context, string, []string, []string, io.Writer
 
 type fakeCaddy struct {
 	managedHosts []string
-	config       json.RawMessage
-}
-
-func (f *fakeCaddy) GetConfig(context.Context) (json.RawMessage, error) {
-	if len(f.config) != 0 {
-		return f.config, nil
-	}
-	return json.RawMessage(`{}`), nil
 }
 func (f *fakeCaddy) ReconcileManagedRoutes(_ context.Context, routes []caddyadmin.HTTPRoute, managedHosts []string) (bool, error) {
 	f.managedHosts = append([]string(nil), managedHosts...)
@@ -632,11 +655,11 @@ type fakeCloudflare struct {
 }
 
 func (f *fakeCloudflare) ValidateToken(context.Context) error { return nil }
-func (f *fakeCloudflare) UpsertCNAME(context.Context, string, string, string, bool) (cloudflare.DNSRecord, bool, error) {
+func (f *fakeCloudflare) UpsertRecord(context.Context, string, string, string, bool) (cloudflare.DNSRecord, bool, error) {
 	f.upsertCount++
 	return cloudflare.DNSRecord{}, true, nil
 }
-func (f *fakeCloudflare) DeleteCNAME(context.Context, string, string) error {
+func (f *fakeCloudflare) DeleteRecord(context.Context, string, string) error {
 	f.deleteCount++
 	return nil
 }

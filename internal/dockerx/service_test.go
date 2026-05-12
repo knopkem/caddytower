@@ -299,12 +299,34 @@ func TestNewFromEnvUsesExplicitDockerHost(t *testing.T) {
 	}
 }
 
+func TestRestartContainerUsesDockerRestart(t *testing.T) {
+	t.Parallel()
+
+	fake := &fakeAPIClient{
+		containerRestartFn: func(_ context.Context, name string, opts container.StopOptions) error {
+			if name != "caddytower" {
+				t.Fatalf("container name = %q", name)
+			}
+			if opts.Timeout == nil || *opts.Timeout != 10 {
+				t.Fatalf("restart timeout = %#v", opts.Timeout)
+			}
+			return nil
+		},
+	}
+
+	service := New(fake)
+	if err := service.RestartContainer(context.Background(), "caddytower"); err != nil {
+		t.Fatalf("RestartContainer() error = %v", err)
+	}
+}
+
 type fakeAPIClient struct {
 	pingFn                  func(context.Context) (types.Ping, error)
 	imagePullFn             func(context.Context, string, image.PullOptions) (io.ReadCloser, error)
 	containerListFn         func(context.Context, container.ListOptions) ([]types.Container, error)
 	containerInspectFn      func(context.Context, string) (types.ContainerJSON, error)
 	containerStatsOneShotFn func(context.Context, string) (container.StatsResponseReader, error)
+	containerRestartFn      func(context.Context, string, container.StopOptions) error
 	containerStopFn         func(context.Context, string, container.StopOptions) error
 	containerRemoveFn       func(context.Context, string, container.RemoveOptions) error
 	containerCreateFn       func(context.Context, *container.Config, *container.HostConfig, *network.NetworkingConfig, *ocispec.Platform, string) (container.CreateResponse, error)
@@ -345,6 +367,13 @@ func (f *fakeAPIClient) ContainerStatsOneShot(ctx context.Context, name string) 
 		}, nil
 	}
 	return f.containerStatsOneShotFn(ctx, name)
+}
+
+func (f *fakeAPIClient) ContainerRestart(ctx context.Context, name string, opts container.StopOptions) error {
+	if f.containerRestartFn == nil {
+		return nil
+	}
+	return f.containerRestartFn(ctx, name, opts)
 }
 
 func (f *fakeAPIClient) ContainerStop(ctx context.Context, name string, opts container.StopOptions) error {

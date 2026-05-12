@@ -32,6 +32,7 @@ type apiClient interface {
 	ContainerList(context.Context, container.ListOptions) ([]types.Container, error)
 	ContainerInspect(context.Context, string) (types.ContainerJSON, error)
 	ContainerStatsOneShot(context.Context, string) (container.StatsResponseReader, error)
+	ContainerRestart(context.Context, string, container.StopOptions) error
 	ContainerStop(context.Context, string, container.StopOptions) error
 	ContainerRemove(context.Context, string, container.RemoveOptions) error
 	ContainerCreate(context.Context, *container.Config, *container.HostConfig, *network.NetworkingConfig, *ocispec.Platform, string) (container.CreateResponse, error)
@@ -416,6 +417,14 @@ func (s *Service) RemoveContainer(ctx context.Context, containerName string) err
 	}
 	if err := s.api.ContainerRemove(ctx, containerName, container.RemoveOptions{Force: true}); err != nil && !errdefs.IsNotFound(err) {
 		return fmt.Errorf("remove container %s: %w", containerName, err)
+	}
+	return nil
+}
+
+func (s *Service) RestartContainer(ctx context.Context, containerName string) error {
+	timeoutSeconds := 10
+	if err := s.api.ContainerRestart(ctx, containerName, container.StopOptions{Timeout: &timeoutSeconds}); err != nil {
+		return fmt.Errorf("restart container %s: %w", containerName, err)
 	}
 	return nil
 }

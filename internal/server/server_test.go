@@ -54,11 +54,24 @@ func TestRouterServesHome(t *testing.T) {
 	if !strings.Contains(rec.Body.String(), "CaddyTower dashboard") {
 		t.Fatalf("body missing scaffold heading: %q", rec.Body.String())
 	}
-	if !strings.Contains(rec.Body.String(), "Guided start") || !strings.Contains(rec.Body.String(), "Manual project") {
-		t.Fatalf("body missing dashboard primary actions: %q", rec.Body.String())
+	if !strings.Contains(rec.Body.String(), "Add project") {
+		t.Fatalf("body missing add project entry point: %q", rec.Body.String())
+	}
+	for _, snippet := range []string{"Guided start", "Manual project", "Create manual project", "Adopt existing services", "adoption from Settings", "adopt running services"} {
+		if strings.Contains(rec.Body.String(), snippet) {
+			t.Fatalf("body still has removed dashboard action %q: %q", snippet, rec.Body.String())
+		}
 	}
 	if !strings.Contains(rec.Body.String(), "Finish the first-run flow") {
 		t.Fatalf("body missing onboarding-oriented copy: %q", rec.Body.String())
+	}
+	for _, snippet := range []string{"Resume setup guide", "Make the public admin hostname reachable", "Blocked until the final public HTTPS admin URL is live."} {
+		if !strings.Contains(rec.Body.String(), snippet) {
+			t.Fatalf("body missing hardened onboarding snippet %q: %q", snippet, rec.Body.String())
+		}
+	}
+	if !strings.Contains(rec.Body.String(), "VPS status") || !strings.Contains(rec.Body.String(), "Status unavailable.") {
+		t.Fatalf("body missing dashboard vps status content: %q", rec.Body.String())
 	}
 	if !strings.Contains(rec.Body.String(), "GitHub import works today") || strings.Contains(rec.Body.String(), "What’s coming") || strings.Contains(rec.Body.String(), "import flow next") || strings.Contains(rec.Body.String(), "planned onboarding") {
 		t.Fatalf("body has stale github onboarding copy: %q", rec.Body.String())
@@ -135,8 +148,53 @@ func TestSetupPageIncludesQRCodeAndAuthenticatorGuidance(t *testing.T) {
 	if !strings.Contains(body, "data:image/png;base64,") {
 		t.Fatalf("setup page missing QR code: %q", body)
 	}
+	for _, snippet := range []string{"data-setup-preview-form", "data-setup-email", "data-setup-secret", "data-setup-qr", "data-setup-otpauth"} {
+		if !strings.Contains(body, snippet) {
+			t.Fatalf("setup page missing preview hook %q: %q", snippet, body)
+		}
+	}
 	if !strings.Contains(body, "Google Authenticator") || !strings.Contains(body, "Bitwarden") {
 		t.Fatalf("setup page missing authenticator guidance: %q", body)
+	}
+}
+
+func TestSetupTOTPPreviewUsesRequestedEmail(t *testing.T) {
+	t.Parallel()
+
+	webUI, err := ui.New()
+	if err != nil {
+		t.Fatalf("ui.New() error = %v", err)
+	}
+
+	stateStore := openServerTestStore(t)
+	authService := auth.New(stateStore, nil, "http://localhost:8080")
+	srv := New(config.Config{
+		HTTPAddr:      ":8080",
+		PublicBaseURL: "http://localhost:8080",
+		DataDir:       t.TempDir(),
+		CaddyAdminURL: "http://shared-caddy:2019",
+	}, webUI, newNoopLogger(), version.Info{Version: "test"}, stateStore, authService, nil, nil, nil)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/setup/totp-preview?email=owner@example.com&secret=JBSWY3DPEHPK3PXP", nil)
+	rec := httptest.NewRecorder()
+	srv.Router().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+
+	var payload struct {
+		OTPAuthURL    string `json:"otp_auth_url"`
+		QRCodeDataURL string `json:"qr_code_data_url"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&payload); err != nil {
+		t.Fatalf("decode preview response: %v", err)
+	}
+	if !strings.Contains(payload.OTPAuthURL, "owner@example.com") {
+		t.Fatalf("preview otp auth url = %q, want requested email", payload.OTPAuthURL)
+	}
+	if !strings.HasPrefix(payload.QRCodeDataURL, "data:image/png;base64,") {
+		t.Fatalf("preview qr code missing data url: %q", payload.QRCodeDataURL)
 	}
 }
 
@@ -501,8 +559,8 @@ func TestSettingsPageRendersDeploymentSetup(t *testing.T) {
 	if !strings.Contains(body, "Deployment settings") || !strings.Contains(body, `placeholder="example.com"`) || !strings.Contains(body, `placeholder="server.example.com or 203.0.113.10"`) {
 		t.Fatalf("settings page missing deployment setup content: %q", body)
 	}
-	if !strings.Contains(body, "Adopt existing containers") {
-		t.Fatalf("settings page missing adopt action: %q", body)
+	if strings.Contains(body, "Adopt existing") || strings.Contains(body, "adoption") {
+		t.Fatalf("settings page should no longer include adoption ui: %q", body)
 	}
 	if !strings.Contains(body, "Audit log") || !strings.Contains(body, "user.bootstrap") || !strings.Contains(body, "admin@example.com") {
 		t.Fatalf("settings page missing audit log content: %q", body)
@@ -646,11 +704,16 @@ func TestSettingsPageShowsGitHubSetupGuideWhenUnconfigured(t *testing.T) {
 		"/api/webhooks/github",
 		"CADDYTOWER_GITHUB_APP_ID",
 		"./secrets/github-app.pem:/run/secrets/github-app.pem:ro",
-		"docker compose up -d",
+		"Restart CaddyTower",
+		"CaddyTower still works without Cloudflare",
+		"Cloudflare zone ID (optional)",
 	} {
 		if !strings.Contains(body, snippet) {
 			t.Fatalf("settings page missing github setup guide snippet %q: %q", snippet, body)
 		}
+	}
+	if strings.Contains(body, "VPS status") {
+		t.Fatalf("settings page should no longer render vps status in the settings view: %q", body)
 	}
 }
 
@@ -720,6 +783,157 @@ func TestSettingsPageFiltersAuditLog(t *testing.T) {
 	}
 }
 
+func TestSettingsPageUsesInstallerRootDomainForGuidance(t *testing.T) {
+	t.Parallel()
+
+	webUI, err := ui.New()
+	if err != nil {
+		t.Fatalf("ui.New() error = %v", err)
+	}
+
+	stateStore := openServerTestStore(t)
+	authService := auth.New(stateStore, nil, "http://localhost:8080")
+	fixedNow := time.Date(2026, 5, 12, 7, 0, 0, 0, time.UTC)
+	authService.SetNow(func() time.Time { return fixedNow })
+	enrollment, err := authService.GenerateEnrollment("admin@example.com")
+	if err != nil {
+		t.Fatalf("GenerateEnrollment() error = %v", err)
+	}
+	code, err := totp.GenerateCodeCustom(enrollment.Secret, fixedNow, totp.ValidateOpts{
+		Period:    30,
+		Skew:      1,
+		Digits:    otp.DigitsSix,
+		Algorithm: otp.AlgorithmSHA1,
+	})
+	if err != nil {
+		t.Fatalf("GenerateCodeCustom() error = %v", err)
+	}
+	token, _, err := authService.CreateInitialUser(context.Background(), "admin@example.com", "super-secure-password", "super-secure-password", enrollment.Secret, code, "127.0.0.1", "test-agent")
+	if err != nil {
+		t.Fatalf("CreateInitialUser() error = %v", err)
+	}
+
+	projectService := projects.New(config.Config{
+		HTTPAddr:      ":8080",
+		PublicBaseURL: "http://localhost:8080",
+		DataDir:       t.TempDir(),
+		CaddyAdminURL: "http://shared-caddy:2019",
+		RootDomain:    "pacsnode.com",
+	}, stateStore, nil, serverTestDocker{}, nil, newNoopLogger())
+
+	srv := New(config.Config{
+		HTTPAddr:      ":8080",
+		PublicBaseURL: "http://localhost:8080",
+		DataDir:       t.TempDir(),
+		CaddyAdminURL: "http://shared-caddy:2019",
+		RootDomain:    "pacsnode.com",
+	}, webUI, newNoopLogger(), version.Info{Version: "test"}, stateStore, authService, projectService, nil, nil)
+
+	req := httptest.NewRequest(http.MethodGet, "/settings", nil)
+	req.AddCookie(&http.Cookie{Name: authService.SessionCookieName(), Value: token})
+	rec := httptest.NewRecorder()
+
+	srv.Router().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+
+	body := rec.Body.String()
+	if !strings.Contains(body, "https://caddytower.pacsnode.com") {
+		t.Fatalf("settings page missing suggested installer-based URL: %q", body)
+	}
+	if !strings.Contains(body, `name="root_domain" value="pacsnode.com"`) {
+		t.Fatalf("settings page missing installer root domain fallback: %q", body)
+	}
+}
+
+func TestSettingsRestartSchedulesControllerRestart(t *testing.T) {
+	t.Parallel()
+
+	webUI, err := ui.New()
+	if err != nil {
+		t.Fatalf("ui.New() error = %v", err)
+	}
+
+	stateStore := openServerTestStore(t)
+	authService := auth.New(stateStore, nil, "http://localhost:8080")
+	fixedNow := time.Date(2026, 5, 12, 7, 0, 0, 0, time.UTC)
+	authService.SetNow(func() time.Time { return fixedNow })
+	enrollment, err := authService.GenerateEnrollment("admin@example.com")
+	if err != nil {
+		t.Fatalf("GenerateEnrollment() error = %v", err)
+	}
+	code, err := totp.GenerateCodeCustom(enrollment.Secret, fixedNow, totp.ValidateOpts{
+		Period:    30,
+		Skew:      1,
+		Digits:    otp.DigitsSix,
+		Algorithm: otp.AlgorithmSHA1,
+	})
+	if err != nil {
+		t.Fatalf("GenerateCodeCustom() error = %v", err)
+	}
+	token, _, err := authService.CreateInitialUser(context.Background(), "admin@example.com", "super-secure-password", "super-secure-password", enrollment.Secret, code, "127.0.0.1", "test-agent")
+	if err != nil {
+		t.Fatalf("CreateInitialUser() error = %v", err)
+	}
+
+	restartCount := 0
+	projectService := projects.New(config.Config{
+		HTTPAddr:      ":8080",
+		PublicBaseURL: "http://localhost:8080",
+		DataDir:       t.TempDir(),
+		CaddyAdminURL: "http://shared-caddy:2019",
+	}, stateStore, nil, serverTestDocker{restartCount: &restartCount}, nil, newNoopLogger())
+
+	srv := New(config.Config{
+		HTTPAddr:      ":8080",
+		PublicBaseURL: "http://localhost:8080",
+		DataDir:       t.TempDir(),
+		CaddyAdminURL: "http://shared-caddy:2019",
+	}, webUI, newNoopLogger(), version.Info{Version: "test"}, stateStore, authService, projectService, nil, nil)
+
+	getReq := httptest.NewRequest(http.MethodGet, "/settings", nil)
+	getReq.AddCookie(&http.Cookie{Name: authService.SessionCookieName(), Value: token})
+	getRec := httptest.NewRecorder()
+	srv.Router().ServeHTTP(getRec, getReq)
+	if getRec.Code != http.StatusOK {
+		t.Fatalf("settings page status = %d, want %d", getRec.Code, http.StatusOK)
+	}
+
+	var csrfCookie *http.Cookie
+	for _, cookie := range getRec.Result().Cookies() {
+		if cookie.Name != authService.SessionCookieName() {
+			csrfCookie = cookie
+			break
+		}
+	}
+	if csrfCookie == nil {
+		t.Fatal("missing csrf cookie")
+	}
+
+	postReq := httptest.NewRequest(http.MethodPost, "/settings/restart", strings.NewReader("csrf_token="+csrfCookie.Value))
+	postReq.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	postReq.AddCookie(&http.Cookie{Name: authService.SessionCookieName(), Value: token})
+	postReq.AddCookie(csrfCookie)
+	postRec := httptest.NewRecorder()
+
+	srv.Router().ServeHTTP(postRec, postReq)
+
+	if postRec.Code != http.StatusFound {
+		t.Fatalf("status = %d, want %d", postRec.Code, http.StatusFound)
+	}
+	if restartCount != 0 {
+		t.Fatalf("restart count changed too early: %d", restartCount)
+	}
+
+	time.Sleep(1500 * time.Millisecond)
+
+	if restartCount != 1 {
+		t.Fatalf("restart count = %d, want 1", restartCount)
+	}
+}
+
 func TestGitHubWebhookPersistsInstallation(t *testing.T) {
 	t.Parallel()
 
@@ -784,7 +998,10 @@ func openServerTestStore(t *testing.T) *store.Store {
 	return stateStore
 }
 
-type serverTestDocker struct{ logContent string }
+type serverTestDocker struct {
+	logContent   string
+	restartCount *int
+}
 
 func (serverTestDocker) PullImage(context.Context, string) error { return nil }
 func (serverTestDocker) RecreateContainer(_ context.Context, spec dockerx.ContainerSpec) (dockerx.ContainerInspect, error) {
@@ -813,6 +1030,12 @@ func (serverTestDocker) ListContainersByLabel(context.Context, string, string) (
 func (serverTestDocker) ListContainers(context.Context) ([]dockerx.ContainerSummary, error) {
 	return nil, nil
 }
+func (d serverTestDocker) RestartContainer(context.Context, string) error {
+	if d.restartCount != nil {
+		*d.restartCount = *d.restartCount + 1
+	}
+	return nil
+}
 func (serverTestDocker) RemoveContainer(context.Context, string) error { return nil }
 func (d serverTestDocker) StreamLogs(context.Context, string, int) (io.ReadCloser, error) {
 	return io.NopCloser(strings.NewReader(d.logContent)), nil
@@ -823,9 +1046,6 @@ func (serverTestDocker) Exec(context.Context, string, []string, []string, io.Wri
 
 type serverTestCaddy struct{}
 
-func (serverTestCaddy) GetConfig(context.Context) (json.RawMessage, error) {
-	return json.RawMessage(`{}`), nil
-}
 func (serverTestCaddy) ReconcileManagedRoutes(context.Context, []caddyadmin.HTTPRoute, []string) (bool, error) {
 	return true, nil
 }

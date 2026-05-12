@@ -14,7 +14,7 @@ CaddyTower is a public-facing VPS control plane. Treat every change as security-
 ## Security requirements
 
 - Assume the admin UI can be exposed to the public internet behind Caddy.
-- Require authenticated routes for all project, backup, log, settings, and adoption actions.
+- Require authenticated routes for all project, backup, log, and settings actions.
 - Use CSRF protection for every state-changing browser form.
 - Keep session cookies `HttpOnly`, `SameSite=Strict`, and `Secure` when the public URL is HTTPS.
 - Enforce HTTPS for non-local public URLs and require a master key for non-local deployments.

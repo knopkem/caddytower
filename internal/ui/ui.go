@@ -176,6 +176,10 @@ type HomePageData struct {
 	ShowOnboarding            bool
 	OpenProjectDialog         bool
 	DomainConfigured          bool
+	EffectivePublicBaseURL    string
+	PublicURLReady            bool
+	PublicAdminHost           string
+	SuggestedPublicBaseURL    string
 	NeedsSetup                bool
 	GitHubConfigured          bool
 	GitHubConnected           bool
@@ -245,6 +249,11 @@ type SettingsPageData struct {
 	ErrorTitle                string
 	ErrorHints                []string
 	Settings                  SettingsFormData
+	EffectiveRootDomain       string
+	EffectivePublicBaseURL    string
+	PublicURLReady            bool
+	PublicAdminHost           string
+	SuggestedPublicBaseURL    string
 	GitHub                    GitHubStatusData
 	Projects                  []ProjectListItem
 	Backups                   []BackupItem

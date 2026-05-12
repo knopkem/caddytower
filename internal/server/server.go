@@ -14,6 +14,7 @@ import (
 	"image/png"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	neturl "net/url"
 	"os"
@@ -36,6 +37,8 @@ import (
 	chimiddleware "github.com/go-chi/chi/v5/middleware"
 	"github.com/pquerna/otp"
 )
+
+const defaultSetupEmail = "admin@example.com"
 
 type Server struct {
 	cfg          config.Config
@@ -101,6 +104,7 @@ func (s *Server) Router() http.Handler {
 	if s.auth != nil {
 		router.Get("/setup", s.handleSetupForm)
 		router.Post("/setup", s.handleSetupSubmit)
+		router.Get("/api/setup/totp-preview", s.handleSetupTOTPPreview)
 		router.Get("/login", s.handleLoginForm)
 		router.Post("/login", s.handleLoginSubmit)
 		router.Post("/logout", s.handleLogout)
@@ -112,7 +116,7 @@ func (s *Server) Router() http.Handler {
 		if s.projects != nil {
 			router.Get("/settings", s.handleSettingsPage)
 			router.Post("/settings", s.handleSettingsSubmit)
-			router.Post("/adopt", s.handleAdoptProjects)
+			router.Post("/settings/restart", s.handleSettingsRestart)
 			if s.github != nil {
 				router.Get("/projects/import", s.handleImportPage)
 				router.Post("/projects/import", s.handleImportCreate)
@@ -199,6 +203,11 @@ func (s *Server) renderDashboard(w http.ResponseWriter, r *http.Request, current
 		csrfToken = s.auth.EnsureCSRFCookie(w, r)
 	}
 	errorTitle, errorHints := describeUIError(errorMessage)
+	gitHubStatus := s.gitHubStatusData(r.Context())
+	resolvedRootDomain := effectiveRootDomain(commonData.settings.RootDomain, s.cfg.RootDomain)
+	effectivePublicBaseURL := effectivePublicBaseURL(s.cfg.PublicBaseURL, resolvedRootDomain)
+	publicURLReady := publicAdminURLReady(r, s.cfg.PublicBaseURL, effectivePublicBaseURL)
+	suggestedPublicBaseURL := suggestedPublicBaseURL(resolvedRootDomain)
 
 	data := ui.HomePageData{
 		GeneratedAt: time.Now().UTC(),
@@ -233,9 +242,13 @@ func (s *Server) renderDashboard(w http.ResponseWriter, r *http.Request, current
 		ShowOnboarding:            r.URL.Query().Get("welcome") == "1",
 		OpenProjectDialog:         r.URL.Query().Get("open") == "project",
 		DomainConfigured:          commonData.settings.RootDomain != "" && commonData.settings.OriginHostname != "",
-		NeedsSetup:                commonData.settings.RootDomain == "" || commonData.settings.OriginHostname == "" || len(commonData.projects) == 0,
+		EffectivePublicBaseURL:    effectivePublicBaseURL,
+		PublicURLReady:            publicURLReady,
+		PublicAdminHost:           projects.HostFromURL(effectivePublicBaseURL),
+		SuggestedPublicBaseURL:    suggestedPublicBaseURL,
+		NeedsSetup:                commonData.settings.RootDomain == "" || commonData.settings.OriginHostname == "" || !publicURLReady || len(commonData.projects) == 0,
 		GitHubConfigured:          s.github != nil && s.github.Configured(),
-		GitHubConnected:           len(s.gitHubStatusData(r.Context()).Installations) > 0,
+		GitHubConnected:           len(gitHubStatus.Installations) > 0,
 	}
 
 	if err := s.ui.Render(w, "home.gohtml", data); err != nil {
@@ -300,10 +313,7 @@ func (s *Server) handleSetupForm(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	email := strings.TrimSpace(r.URL.Query().Get("email"))
-	if email == "" {
-		email = "admin@example.com"
-	}
+	email := setupPreviewEmail(r.URL.Query().Get("email"))
 
 	enrollment, err := s.auth.GenerateEnrollment(email)
 	if err != nil {
@@ -319,6 +329,44 @@ func (s *Server) handleSetupForm(w http.ResponseWriter, r *http.Request) {
 		ManualKey:  enrollment.ManualKey,
 		OTPAuthURL: enrollment.URL,
 	})
+}
+
+func (s *Server) handleSetupTOTPPreview(w http.ResponseWriter, r *http.Request) {
+	required, err := s.auth.BootstrapRequired(r.Context())
+	if err != nil {
+		s.logger.Error("check bootstrap status", "error", err)
+		http.Error(w, "failed to check bootstrap status", http.StatusInternalServerError)
+		return
+	}
+	if !required {
+		http.Error(w, "setup already complete", http.StatusConflict)
+		return
+	}
+
+	secret := strings.TrimSpace(r.URL.Query().Get("secret"))
+	if secret == "" {
+		http.Error(w, "missing totp secret", http.StatusBadRequest)
+		return
+	}
+
+	enrollment := s.auth.BuildEnrollment(setupPreviewEmail(r.URL.Query().Get("email")), secret)
+	qrCodeDataURL, err := buildTOTPQRCodeDataURL(enrollment.URL)
+	if err != nil {
+		s.logger.Error("build setup qr code", "error", err)
+		http.Error(w, "failed to build preview", http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	if err := json.NewEncoder(w).Encode(struct {
+		OTPAuthURL    string `json:"otp_auth_url"`
+		QRCodeDataURL string `json:"qr_code_data_url"`
+	}{
+		OTPAuthURL:    enrollment.URL,
+		QRCodeDataURL: qrCodeDataURL,
+	}); err != nil {
+		s.logger.Error("encode setup preview", "error", err)
+	}
 }
 
 func (s *Server) handleSetupSubmit(w http.ResponseWriter, r *http.Request) {
@@ -388,6 +436,100 @@ func buildTOTPQRCodeDataURL(otpAuthURL string) (string, error) {
 	}
 
 	return "data:image/png;base64," + base64.StdEncoding.EncodeToString(encoded.Bytes()), nil
+}
+
+func setupPreviewEmail(raw string) string {
+	email := strings.TrimSpace(raw)
+	if email == "" {
+		return defaultSetupEmail
+	}
+	return email
+}
+
+func suggestedPublicBaseURL(rootDomain string) string {
+	rootDomain = strings.TrimSpace(rootDomain)
+	if rootDomain == "" {
+		return "https://caddytower.example.com"
+	}
+	return "https://caddytower." + rootDomain
+}
+
+func effectiveRootDomain(settingsRootDomain, configRootDomain string) string {
+	settingsRootDomain = strings.TrimSpace(settingsRootDomain)
+	if settingsRootDomain != "" {
+		return settingsRootDomain
+	}
+	return strings.TrimSpace(configRootDomain)
+}
+
+func effectivePublicBaseURL(configPublicBaseURL, rootDomain string) string {
+	configPublicBaseURL = strings.TrimRight(strings.TrimSpace(configPublicBaseURL), "/")
+	if isConfiguredPublicAdminURL(configPublicBaseURL) {
+		return configPublicBaseURL
+	}
+	if strings.TrimSpace(rootDomain) == "" {
+		return configPublicBaseURL
+	}
+	return suggestedPublicBaseURL(rootDomain)
+}
+
+func isConfiguredPublicAdminURL(raw string) bool {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return false
+	}
+	parsed, err := neturl.Parse(raw)
+	if err != nil {
+		return false
+	}
+	if !strings.EqualFold(parsed.Scheme, "https") {
+		return false
+	}
+	host := strings.TrimSpace(parsed.Hostname())
+	if host == "" {
+		return false
+	}
+	if strings.EqualFold(host, "localhost") {
+		return false
+	}
+	if ip := net.ParseIP(host); ip != nil && ip.IsLoopback() {
+		return false
+	}
+	return true
+}
+
+func publicAdminURLReady(r *http.Request, configuredPublicBaseURL, effectivePublicBaseURL string) bool {
+	if isConfiguredPublicAdminURL(configuredPublicBaseURL) {
+		return true
+	}
+	target, err := neturl.Parse(strings.TrimSpace(effectivePublicBaseURL))
+	if err != nil || !strings.EqualFold(target.Scheme, "https") || strings.TrimSpace(target.Hostname()) == "" {
+		return false
+	}
+	return strings.EqualFold(strings.TrimSpace(requestScheme(r)), "https") && strings.EqualFold(strings.TrimSpace(requestHost(r)), strings.TrimSpace(target.Hostname()))
+}
+
+func requestScheme(r *http.Request) string {
+	if forwarded := strings.TrimSpace(r.Header.Get("X-Forwarded-Proto")); forwarded != "" {
+		return forwarded
+	}
+	if r.TLS != nil {
+		return "https"
+	}
+	return "http"
+}
+
+func requestHost(r *http.Request) string {
+	host := strings.TrimSpace(r.Host)
+	if host == "" {
+		return ""
+	}
+	if strings.Contains(host, ":") {
+		if parsedHost, _, err := net.SplitHostPort(host); err == nil {
+			return parsedHost
+		}
+	}
+	return host
 }
 
 func (s *Server) handleLoginForm(w http.ResponseWriter, r *http.Request) {
@@ -482,6 +624,33 @@ func (s *Server) handleSettingsSubmit(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/settings?info=Settings+saved", http.StatusFound)
 }
 
+func (s *Server) handleSettingsRestart(w http.ResponseWriter, r *http.Request) {
+	user, ok := s.requireAuthenticated(w, r)
+	if !ok {
+		return
+	}
+	if !s.auth.ValidateCSRF(r) {
+		http.Error(w, "invalid csrf token", http.StatusForbidden)
+		return
+	}
+
+	s.scheduleControllerRestart(user.ID)
+	http.Redirect(w, r, "/settings?info="+neturl.QueryEscape("Restarting CaddyTower to reload env-backed settings. Reload this page in a few seconds."), http.StatusFound)
+}
+
+func (s *Server) scheduleControllerRestart(userID string) {
+	if s.projects == nil {
+		return
+	}
+	time.AfterFunc(1200*time.Millisecond, func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		if err := s.projects.RestartController(ctx, userID); err != nil {
+			s.logger.Error("restart caddytower", "error", err)
+		}
+	})
+}
+
 func (s *Server) handleProjectCreate(w http.ResponseWriter, r *http.Request) {
 	user, ok := s.requireAuthenticated(w, r)
 	if !ok {
@@ -505,31 +674,6 @@ func (s *Server) handleProjectCreate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	http.Redirect(w, r, "/projects/"+project.ID+"?info=Project+saved", http.StatusFound)
-}
-
-func (s *Server) handleAdoptProjects(w http.ResponseWriter, r *http.Request) {
-	user, ok := s.requireAuthenticated(w, r)
-	if !ok {
-		return
-	}
-	if !s.auth.ValidateCSRF(r) {
-		http.Error(w, "invalid csrf token", http.StatusForbidden)
-		return
-	}
-
-	adopted, err := s.projects.AdoptExisting(r.Context(), user.ID)
-	if err != nil {
-		s.renderSettingsPage(w, r, user.Email, err.Error(), "")
-		return
-	}
-
-	message := "No adoptable projects found"
-	if len(adopted) == 1 {
-		message = "Adopted 1 existing project"
-	} else if len(adopted) > 1 {
-		message = fmt.Sprintf("Adopted %d existing projects", len(adopted))
-	}
-	http.Redirect(w, r, "/settings?info="+neturl.QueryEscape(message), http.StatusFound)
 }
 
 func (s *Server) handleBackupRun(w http.ResponseWriter, r *http.Request) {
@@ -1228,7 +1372,7 @@ func (s *Server) renderProjectPage(w http.ResponseWriter, r *http.Request, curre
 		ErrorHints:        errorHints,
 		Project:           form,
 		ProjectMeta:       projectListItem(project),
-		WebhookURL:        strings.TrimRight(s.cfg.PublicBaseURL, "/") + "/api/webhooks/deploy/" + project.Slug,
+		WebhookURL:        strings.TrimRight(effectivePublicBaseURL(s.cfg.PublicBaseURL, s.cfg.RootDomain), "/") + "/api/webhooks/deploy/" + project.Slug,
 		WebhookSecret:     project.WebhookSecret,
 		PrimaryDomain:     project.PrimaryDomain,
 		PendingImage:      project.Status == "pending image",
@@ -1246,7 +1390,7 @@ func (s *Server) renderProjectPage(w http.ResponseWriter, r *http.Request, curre
 	}
 	if strings.TrimSpace(project.GitHubRepoFullName) != "" {
 		data.WorkflowSecretName = importWorkflowSecretName
-		data.WorkflowSnippet = buildGitHubWebhookSnippet(strings.TrimRight(s.cfg.PublicBaseURL, "/")+"/api/webhooks/deploy/"+project.Slug, importWorkflowSecretName)
+		data.WorkflowSnippet = buildGitHubWebhookSnippet(strings.TrimRight(effectivePublicBaseURL(s.cfg.PublicBaseURL, s.cfg.RootDomain), "/")+"/api/webhooks/deploy/"+project.Slug, importWorkflowSecretName)
 	}
 
 	if err := s.ui.Render(w, "project.gohtml", data); err != nil {
@@ -1265,6 +1409,10 @@ func (s *Server) renderSettingsPage(w http.ResponseWriter, r *http.Request, curr
 		return
 	}
 	errorTitle, errorHints := describeUIError(errorMessage)
+	resolvedRootDomain := effectiveRootDomain(commonData.settings.RootDomain, s.cfg.RootDomain)
+	effectivePublicBaseURL := effectivePublicBaseURL(s.cfg.PublicBaseURL, resolvedRootDomain)
+	publicURLReady := publicAdminURLReady(r, s.cfg.PublicBaseURL, effectivePublicBaseURL)
+	suggestedPublicBaseURL := suggestedPublicBaseURL(resolvedRootDomain)
 
 	data := ui.SettingsPageData{
 		PageTitle: "CaddyTower | Settings",
@@ -1287,6 +1435,11 @@ func (s *Server) renderSettingsPage(w http.ResponseWriter, r *http.Request, curr
 		ErrorTitle:                errorTitle,
 		ErrorHints:                errorHints,
 		Settings:                  commonData.settings,
+		EffectiveRootDomain:       resolvedRootDomain,
+		EffectivePublicBaseURL:    effectivePublicBaseURL,
+		PublicURLReady:            publicURLReady,
+		PublicAdminHost:           projects.HostFromURL(effectivePublicBaseURL),
+		SuggestedPublicBaseURL:    suggestedPublicBaseURL,
 		GitHub:                    s.gitHubStatusData(r.Context()),
 		Projects:                  commonData.projects,
 		Backups:                   commonData.backups,

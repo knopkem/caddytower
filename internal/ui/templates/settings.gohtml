@@ -15,7 +15,7 @@
         <div class="page-header-main">
           <p class="brand-pill">CaddyTower</p>
           <h1>{{if .Headline}}{{.Headline}}{{else}}Settings{{end}}</h1>
-          <p class="lede">Domain setup, VPS health, backups, adoption, and controller runtime details live here so the dashboard stays focused on projects.</p>
+          <p class="lede">Domain setup, GitHub import, backups, and controller runtime details live here so the dashboard stays focused on projects and host health.</p>
         </div>
         <div class="toolbar-actions">
           <a class="button-link secondary" href="/">Back to dashboard</a>
@@ -31,7 +31,7 @@
       {{template "error-callout" .}}
       {{if .InfoMessage}}<p class="notice" role="status">{{.InfoMessage}}</p>{{end}}
 
-      <section class="grid three">
+      <section class="grid two">
         <article class="card">
           <div class="card-header">
             <div class="card-title">
@@ -48,15 +48,46 @@
           <dl class="stats">
             <div><dt>Signed in as</dt><dd>{{if .CurrentUser}}{{.CurrentUser}}{{else}}anonymous{{end}}</dd></div>
             <div><dt>Managed projects</dt><dd>{{len .Projects}}</dd></div>
-            <div><dt>Root domain</dt><dd>{{if .Settings.RootDomain}}{{.Settings.RootDomain}}{{else}}not configured{{end}}</dd></div>
+            <div><dt>Root domain</dt><dd>{{if .EffectiveRootDomain}}{{.EffectiveRootDomain}}{{else}}not configured{{end}}</dd></div>
           </dl>
         </article>
 
         <article class="card">
           <div class="card-header">
             <div class="card-title">
+              <h2>Controller runtime</h2>
+              <p>Quick install and runtime details for this CaddyTower instance.</p>
+            </div>
+            <details class="help">
+              <summary>Help</summary>
+              <div class="help-body">
+                <p>Use this card when you need to confirm the public admin URL, storage path, or whether secrets are protected with the master key.</p>
+              </div>
+            </details>
+          </div>
+          <dl class="stats">
+            <div><dt>Public admin URL</dt><dd class="mono">{{.EffectivePublicBaseURL}}</dd></div>
+            <div><dt>Admin hostname</dt><dd class="mono">{{.PublicAdminHost}}</dd></div>
+            <div><dt>Data directory</dt><dd class="mono">{{.Config.DataDir}}</dd></div>
+            <div><dt>State database</dt><dd class="mono">{{.Config.StateDBPath}}</dd></div>
+            <div><dt>Secrets at rest</dt><dd>{{if .Config.MasterKeySet}}encrypted{{else}}not configured{{end}}</dd></div>
+          </dl>
+          <div class="actions section-spacer">
+            <form method="post" action="/settings/restart">
+              <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+              <button type="submit" class="secondary">Restart CaddyTower</button>
+            </form>
+          </div>
+          <p class="field-hint section-spacer">Use this after changing env-backed options like GitHub App values, backup settings, or controller image configuration on the host.</p>
+        </article>
+      </section>
+
+      <section class="section">
+        <article class="card">
+          <div class="card-header">
+            <div class="card-title">
               <h2>GitHub import</h2>
-              <p>GitHub App connection status for the live repo-import flow.</p>
+              <p>GitHub App connection status and setup guidance for the live repo-import flow.</p>
             </div>
             <details class="help">
               <summary>Help</summary>
@@ -108,15 +139,15 @@
             <p>Most installs should do this after the first login. Keep the VPS bootstrap simple, then come back here when you want GitHub-based imports.</p>
           </div>
           <div class="hint-list section-spacer">
-            {{if or (eq .Config.PublicBaseURL "http://127.0.0.1:8080") (eq .Config.PublicBaseURL "http://localhost:8080")}}
-            <p><strong>1. Switch CaddyTower to its final public HTTPS URL first.</strong> GitHub cannot send webhooks to a localhost-only admin URL. Suggested URL: <span class="inline-code">{{if .Settings.RootDomain}}https://caddytower.{{.Settings.RootDomain}}{{else}}https://caddytower.example.com{{end}}</span>.</p>
+            {{if not .PublicURLReady}}
+            <p><strong>1. Make the admin hostname reachable first.</strong> GitHub needs a public HTTPS URL. Use <span class="inline-code">{{.EffectivePublicBaseURL}}</span>, and make sure <span class="inline-code">{{.PublicAdminHost}}</span> points at your VPS.</p>
             {{else}}
-            <p><strong>1. Public admin URL is ready.</strong> GitHub can target <span class="inline-code">{{.Config.PublicBaseURL}}</span>.</p>
+            <p><strong>1. Public admin URL is ready.</strong> GitHub can target <span class="inline-code">{{.EffectivePublicBaseURL}}</span>.</p>
             {{end}}
-            <p><strong>2. Create a GitHub App.</strong> In GitHub App settings, use <span class="inline-code">{{if or (eq .Config.PublicBaseURL "http://127.0.0.1:8080") (eq .Config.PublicBaseURL "http://localhost:8080")}}{{if .Settings.RootDomain}}https://caddytower.{{.Settings.RootDomain}}{{else}}https://caddytower.example.com{{end}}{{else}}{{.Config.PublicBaseURL}}{{end}}</span> as the homepage URL and <span class="inline-code">{{if or (eq .Config.PublicBaseURL "http://127.0.0.1:8080") (eq .Config.PublicBaseURL "http://localhost:8080")}}{{if .Settings.RootDomain}}https://caddytower.{{.Settings.RootDomain}}{{else}}https://caddytower.example.com{{end}}{{else}}{{.Config.PublicBaseURL}}{{end}}/api/webhooks/github</span> as the webhook URL.</p>
+            <p><strong>2. Create a GitHub App.</strong> In GitHub App settings, use <span class="inline-code">{{.EffectivePublicBaseURL}}</span> as the homepage URL and <span class="inline-code">{{.EffectivePublicBaseURL}}/api/webhooks/github</span> as the webhook URL.</p>
             <p><strong>3. Give it the minimum permissions.</strong> Metadata: read. Contents: read and write. Pull requests: read and write. Subscribe to the <span class="inline-code">installation</span> and <span class="inline-code">installation_repositories</span> webhook events.</p>
             <p><strong>4. Mount the PEM on the host.</strong> Put the downloaded private key somewhere like <span class="inline-code">/opt/caddytower/secrets/github-app.pem</span>, then mount it read-only into the container at <span class="inline-code">/run/secrets/github-app.pem</span>.</p>
-            <p><strong>5. Add the GitHub App values to</strong> <span class="inline-code">/opt/caddytower/caddytower.env</span>, restart with <span class="inline-code">docker compose up -d</span>, then return here and click <strong>Connect on GitHub</strong>.</p>
+            <p><strong>5. Add the GitHub App values to</strong> <span class="inline-code">/opt/caddytower/caddytower.env</span>, then use <strong>Restart CaddyTower</strong> above so the new env values are loaded before you click <strong>Connect on GitHub</strong>.</p>
           </div>
           <article class="subcard section-spacer">
             <h3>Values to add</h3>
@@ -131,92 +162,70 @@
           </article>
           {{end}}
         </article>
-
-        <article class="card">
-          <div class="card-header">
-            <div class="card-title">
-              <h2>VPS status</h2>
-              <p>RAM and disk usage for this host.</p>
-            </div>
-            <details class="help">
-              <summary>Alerts</summary>
-              <div class="help-body">
-                <p>Warnings trigger below {{.VPSStatus.RAMThreshold}}% free RAM or {{.VPSStatus.DiskThreshold}}% free disk.</p>
-                <p>Email alerts are {{if .VPSStatus.EmailConfigured}}enabled for {{.VPSStatus.EmailTo}}{{else}}not configured; set SMTP environment variables to enable them{{end}}.</p>
-              </div>
-            </details>
-          </div>
-          {{if .VPSStatus.Available}}
-          <dl class="stats">
-            <div><dt>RAM used</dt><dd>{{.VPSStatus.MemorySummary}}</dd></div>
-            <div><dt>RAM free</dt><dd>{{.VPSStatus.MemoryFreePct}}%</dd></div>
-            <div><dt>Disk used</dt><dd>{{.VPSStatus.DiskSummary}}</dd></div>
-            <div><dt>Disk free</dt><dd>{{.VPSStatus.DiskFreePct}}%</dd></div>
-          </dl>
-          <div class="meter-stack">
-            <div>
-              <div class="meter-label"><span>RAM</span><span>{{.VPSStatus.MemoryUsedPct}}%</span></div>
-              <meter min="0" max="100" low="75" high="90" optimum="35" value="{{.VPSStatus.MemoryUsedPct}}"></meter>
-            </div>
-            <div>
-              <div class="meter-label"><span>Disk</span><span>{{.VPSStatus.DiskUsedPct}}%</span></div>
-              <meter min="0" max="100" low="75" high="90" optimum="35" value="{{.VPSStatus.DiskUsedPct}}"></meter>
-            </div>
-          </div>
-          {{if .VPSStatus.Warnings}}
-          <div class="warning-list">
-            {{range .VPSStatus.Warnings}}<p>{{.}}</p>{{end}}
-          </div>
-          {{end}}
-          <p class="muted section-spacer">Checked {{.VPSStatus.CheckedAt}} on <span class="mono">{{.VPSStatus.DiskPath}}</span>.</p>
-          {{else}}
-          <div class="empty-state">
-            <p><strong>Status unavailable.</strong></p>
-            <p>{{.VPSStatus.ErrorMessage}}</p>
-          </div>
-          {{end}}
-        </article>
       </section>
 
-      <section class="grid two section">
+      <section class="section">
         <article class="card">
           <div class="card-header">
             <div class="card-title">
               <h2>Deployment settings</h2>
-              <p>Configure the root domain and the hostname or IP that Cloudflare should point at.</p>
+              <p>Configure the root domain and the hostname or IP your DNS should point at. Cloudflare automation is optional.</p>
             </div>
             <details class="help">
               <summary>How to set this up</summary>
               <div class="help-body">
                 <p><strong>Root domain</strong>: the base domain CaddyTower should manage, for example <span class="inline-code">example.com</span>.</p>
-                <p><strong>Origin hostname</strong>: the hostname or public IP Cloudflare should point at, for example <span class="inline-code">server.example.com</span> or <span class="inline-code">203.0.113.10</span>.</p>
-                <p>Cloudflare zone ID and API token are only required for automatic DNS records.</p>
+                <p><strong>Origin hostname</strong>: the hostname or public IP your DNS records should point at, for example <span class="inline-code">server.example.com</span> or <span class="inline-code">203.0.113.10</span>.</p>
+                <p>CaddyTower works without Cloudflare. Leave the optional Cloudflare section empty if you manage DNS manually or use another provider.</p>
               </div>
             </details>
+          </div>
+          <div class="subcard section-spacer">
+            <p><strong>Public admin URL:</strong> <span class="inline-code">{{.EffectivePublicBaseURL}}</span></p>
+            {{if .EffectiveRootDomain}}
+            <p class="field-hint">The installer already provided <span class="inline-code">{{.EffectiveRootDomain}}</span> as the managed root domain, so you usually only need to add the origin hostname here.</p>
+            {{else}}
+            <p class="field-hint">Set the managed root domain first so CaddyTower can compose project URLs and the final admin hostname correctly.</p>
+            {{end}}
+            {{if and .Settings.CloudflareTokenPresent .Settings.CloudflareZoneID .Settings.OriginHostname}}
+            <p class="field-hint">With Cloudflare configured below, CaddyTower can keep <span class="inline-code">{{.PublicAdminHost}}</span> pointed at <span class="inline-code">{{.Settings.OriginHostname}}</span> automatically.</p>
+            {{else if .Settings.OriginHostname}}
+            <p class="field-hint">CaddyTower already manages the shared Caddy route for <span class="inline-code">{{.PublicAdminHost}}</span>. If you do not use Cloudflare automation, create that DNS record manually with your provider and point it to <span class="inline-code">{{.Settings.OriginHostname}}</span>.</p>
+            {{end}}
           </div>
           <form method="post" action="/settings" class="stack">
             <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
             <label class="field">
               <span>Root domain</span>
-              <input type="text" name="root_domain" value="{{.Settings.RootDomain}}" placeholder="example.com">
+              <input type="text" name="root_domain" value="{{.EffectiveRootDomain}}" placeholder="example.com">
             </label>
             <label class="field">
               <span>Origin hostname</span>
               <input type="text" name="origin_hostname" value="{{.Settings.OriginHostname}}" placeholder="server.example.com or 203.0.113.10">
             </label>
-            <label class="field">
-              <span>Cloudflare zone ID</span>
-              <input type="text" name="cloudflare_zone_id" value="{{.Settings.CloudflareZoneID}}">
-            </label>
-            <label class="field">
-              <span>Cloudflare API token</span>
-              <input type="password" name="cloudflare_api_token" value="" placeholder="{{if .Settings.CloudflareTokenPresent}}Configured - leave blank to keep{{else}}Paste token{{end}}">
-              <small class="field-hint">Use a token with DNS edit permissions only for the target zone.</small>
-            </label>
-            <label class="checkbox">
-              <input type="checkbox" name="cloudflare_proxied" {{if .Settings.CloudflareProxied}}checked{{end}}>
-              <span>Proxy records through Cloudflare</span>
-            </label>
+            <small class="field-hint">This is enough for manual DNS. Point <span class="inline-code">{{.PublicAdminHost}}</span> and your app subdomains at this origin with your current DNS provider if you do not want automatic DNS changes.</small>
+            <article class="subcard section-spacer">
+              <h3>Optional: automatic DNS updates with Cloudflare</h3>
+              <p>CaddyTower still works without Cloudflare. This section is only for automatically creating and updating DNS records for the admin hostname and managed apps from the app.</p>
+              <div class="hint-list section-spacer">
+                <p><strong>1. Find the zone ID.</strong> Open the target domain in Cloudflare and copy the <strong>Zone ID</strong> from the overview page sidebar.</p>
+                <p><strong>2. Create a scoped API token.</strong> In Cloudflare, open <strong>Profile → API Tokens</strong>, create a token from the <strong>Edit zone DNS</strong> template or a custom token, and restrict it to this zone with <span class="inline-code">Zone:Read</span> and <span class="inline-code">DNS:Edit</span>.</p>
+                <p><strong>3. Paste both values below.</strong> If you leave them blank, CaddyTower will not touch DNS and you can keep managing records yourself. Hostname targets become CNAME records; IP targets become A or AAAA records automatically.</p>
+              </div>
+              <label class="field section-spacer">
+                <span>Cloudflare zone ID (optional)</span>
+                <input type="text" name="cloudflare_zone_id" value="{{.Settings.CloudflareZoneID}}" placeholder="Zone ID from Cloudflare overview">
+              </label>
+              <label class="field">
+                <span>Cloudflare API token (optional)</span>
+                <input type="password" name="cloudflare_api_token" value="" placeholder="{{if .Settings.CloudflareTokenPresent}}Configured - leave blank to keep{{else}}Paste token{{end}}">
+                <small class="field-hint">Use a token scoped to this zone only. Leave blank if you do not want automatic DNS updates.</small>
+              </label>
+              <label class="checkbox">
+                <input type="checkbox" name="cloudflare_proxied" {{if .Settings.CloudflareProxied}}checked{{end}}>
+                <span>Proxy records through Cloudflare</span>
+              </label>
+            </article>
             <button type="submit">Save settings</button>
           </form>
         </article>
@@ -267,55 +276,6 @@
             <p>{{if .BackupsEnabled}}Run one manually now or wait for the scheduled job.{{else}}Enable backups in the environment if you want automated snapshots.{{end}}</p>
           </div>
           {{end}}
-        </article>
-      </section>
-
-      <section class="grid two section">
-        <article class="card">
-          <div class="card-header">
-            <div class="card-title">
-              <h2>Adopt existing services</h2>
-              <p>Import containers and matching Caddy routes that already exist on the VPS.</p>
-            </div>
-            <details class="help">
-              <summary>How to use this</summary>
-              <div class="help-body">
-                <p>Run adoption after installing CaddyTower beside an existing stack. It scans running containers and current Caddy routes so you can start managing them without an immediate redeploy.</p>
-              </div>
-            </details>
-          </div>
-          <div class="empty-state">
-            <p><strong>Use this for migrations.</strong></p>
-            <p>If workloads are already running, adoption is safer than recreating them manually from scratch.</p>
-          </div>
-          <form method="post" action="/adopt" class="section-spacer inline-form">
-            <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
-            <button type="submit" class="secondary">Adopt existing containers</button>
-          </form>
-        </article>
-
-        <article class="card">
-          <div class="card-header">
-            <div class="card-title">
-              <h2>Runtime config</h2>
-              <p>Controller-level configuration from the running process.</p>
-            </div>
-            <details class="help">
-              <summary>Help</summary>
-              <div class="help-body">
-                <p>Use this card to confirm the public base URL, Docker socket target, data location, and encrypted-secret master key state.</p>
-              </div>
-            </details>
-          </div>
-          <dl class="kv">
-            <div><dt>Public base URL</dt><dd>{{if .Config.PublicBaseURL}}{{.Config.PublicBaseURL}}{{else}}not configured{{end}}</dd></div>
-            <div><dt>HTTP listen addr</dt><dd class="mono">{{.Config.HTTPAddr}}</dd></div>
-            <div><dt>Docker host</dt><dd class="mono">{{if .Config.DockerHost}}{{.Config.DockerHost}}{{else}}default socket{{end}}</dd></div>
-            <div><dt>State DB</dt><dd class="mono">{{.Config.StateDBPath}}</dd></div>
-            <div><dt>Data dir</dt><dd class="mono">{{.Config.DataDir}}</dd></div>
-            <div><dt>Caddy admin</dt><dd class="mono">{{.Config.CaddyAdminURL}}</dd></div>
-            <div><dt>Master key</dt><dd>{{if .Config.MasterKeySet}}configured{{else}}not configured{{end}}</dd></div>
-          </dl>
         </article>
       </section>
 

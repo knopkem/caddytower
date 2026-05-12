@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -107,7 +108,16 @@ func (c *Client) ListZones(ctx context.Context, name string) ([]Zone, error) {
 }
 
 func (c *Client) UpsertCNAME(ctx context.Context, zoneID, fqdn, target string, proxied bool) (DNSRecord, bool, error) {
-	existing, err := c.listDNSRecords(ctx, zoneID, "CNAME", fqdn)
+	return c.UpsertRecord(ctx, zoneID, fqdn, target, proxied)
+}
+
+func (c *Client) UpsertRecord(ctx context.Context, zoneID, fqdn, target string, proxied bool) (DNSRecord, bool, error) {
+	recordType := dnsRecordType(target)
+	if err := c.deleteConflictingRecords(ctx, zoneID, fqdn, recordType); err != nil {
+		return DNSRecord{}, false, err
+	}
+
+	existing, err := c.listDNSRecords(ctx, zoneID, recordType, fqdn)
 	if err != nil {
 		return DNSRecord{}, false, err
 	}
@@ -119,7 +129,7 @@ func (c *Client) UpsertCNAME(ctx context.Context, zoneID, fqdn, target string, p
 		}
 
 		body, err := c.do(ctx, http.MethodPut, fmt.Sprintf("/zones/%s/dns_records/%s", zoneID, record.ID), recordRequest{
-			Type:    "CNAME",
+			Type:    recordType,
 			Name:    fqdn,
 			Content: target,
 			Proxied: proxied,
@@ -140,7 +150,7 @@ func (c *Client) UpsertCNAME(ctx context.Context, zoneID, fqdn, target string, p
 	}
 
 	body, err := c.do(ctx, http.MethodPost, fmt.Sprintf("/zones/%s/dns_records", zoneID), recordRequest{
-		Type:    "CNAME",
+		Type:    recordType,
 		Name:    fqdn,
 		Content: target,
 		Proxied: proxied,
@@ -161,17 +171,21 @@ func (c *Client) UpsertCNAME(ctx context.Context, zoneID, fqdn, target string, p
 }
 
 func (c *Client) DeleteCNAME(ctx context.Context, zoneID, fqdn string) error {
-	records, err := c.listDNSRecords(ctx, zoneID, "CNAME", fqdn)
-	if err != nil {
-		return err
-	}
+	return c.DeleteRecord(ctx, zoneID, fqdn)
+}
 
-	for _, record := range records {
-		if _, err := c.do(ctx, http.MethodDelete, fmt.Sprintf("/zones/%s/dns_records/%s", zoneID, record.ID), nil); err != nil {
+func (c *Client) DeleteRecord(ctx context.Context, zoneID, fqdn string) error {
+	for _, recordType := range []string{"CNAME", "A", "AAAA"} {
+		records, err := c.listDNSRecords(ctx, zoneID, recordType, fqdn)
+		if err != nil {
 			return err
 		}
+		for _, record := range records {
+			if _, err := c.do(ctx, http.MethodDelete, fmt.Sprintf("/zones/%s/dns_records/%s", zoneID, record.ID), nil); err != nil {
+				return err
+			}
+		}
 	}
-
 	return nil
 }
 
@@ -227,6 +241,35 @@ func (c *Client) do(ctx context.Context, method, path string, payload any) ([]by
 	}
 
 	return body, nil
+}
+
+func dnsRecordType(target string) string {
+	ip := net.ParseIP(strings.TrimSpace(target))
+	if ip == nil {
+		return "CNAME"
+	}
+	if ip.To4() != nil {
+		return "A"
+	}
+	return "AAAA"
+}
+
+func (c *Client) deleteConflictingRecords(ctx context.Context, zoneID, fqdn, keepType string) error {
+	for _, recordType := range []string{"CNAME", "A", "AAAA"} {
+		if recordType == keepType {
+			continue
+		}
+		records, err := c.listDNSRecords(ctx, zoneID, recordType, fqdn)
+		if err != nil {
+			return err
+		}
+		for _, record := range records {
+			if _, err := c.do(ctx, http.MethodDelete, fmt.Sprintf("/zones/%s/dns_records/%s", zoneID, record.ID), nil); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 func formatErrors(errors []apiError) string {

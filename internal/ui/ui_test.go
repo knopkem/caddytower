@@ -2,6 +2,7 @@ package ui
 
 import (
 	"bytes"
+	"html/template"
 	"strings"
 	"testing"
 	"time"
@@ -35,6 +36,10 @@ func TestRenderHome(t *testing.T) {
 			CaddyAdminURL: "http://shared-caddy:2019",
 			MasterKeySet:  true,
 		},
+		EffectivePublicBaseURL: "https://caddytower.example.com",
+		PublicURLReady:         true,
+		PublicAdminHost:        "caddytower.example.com",
+		SuggestedPublicBaseURL: "https://caddytower.example.com",
 	})
 	if err != nil {
 		t.Fatalf("Render() error = %v", err)
@@ -46,6 +51,17 @@ func TestRenderHome(t *testing.T) {
 	}
 	if !strings.Contains(body, "Ship Docker projects behind shared Caddy") {
 		t.Fatalf("rendered body missing project-first lede: %q", body)
+	}
+	if !strings.Contains(body, "Add project") {
+		t.Fatalf("rendered home missing add project entry point: %q", body)
+	}
+	if !strings.Contains(body, "VPS status") {
+		t.Fatalf("rendered home missing vps status card: %q", body)
+	}
+	for _, snippet := range []string{"Guided start", "Manual project", "Create manual project", "Adopt existing services", "adoption from Settings", "adopt running services"} {
+		if strings.Contains(body, snippet) {
+			t.Fatalf("rendered home still has removed dashboard action %q: %q", snippet, body)
+		}
 	}
 	if !strings.Contains(body, "/assets/vendor/htmx.min.js") || strings.Contains(body, "/assets/vendor/pico.classless.min.css") {
 		t.Fatalf("rendered body has unexpected ui assets: %q", body)
@@ -72,6 +88,10 @@ func TestRenderSettings(t *testing.T) {
 			CaddyAdminURL: "http://shared-caddy:2019",
 			MasterKeySet:  true,
 		},
+		EffectiveRootDomain:    "pacsnode.com",
+		EffectivePublicBaseURL: "https://caddytower.pacsnode.com",
+		PublicAdminHost:        "caddytower.pacsnode.com",
+		SuggestedPublicBaseURL: "https://caddytower.pacsnode.com",
 	})
 	if err != nil {
 		t.Fatalf("Render() error = %v", err)
@@ -81,7 +101,45 @@ func TestRenderSettings(t *testing.T) {
 	if !strings.Contains(body, "Deployment settings") {
 		t.Fatalf("rendered settings missing deployment heading: %q", body)
 	}
-	if !strings.Contains(body, "http://shared-caddy:2019") {
-		t.Fatalf("rendered settings missing caddy admin url: %q", body)
+	if !strings.Contains(body, "Controller runtime") || !strings.Contains(body, "/var/lib/caddytower/state.db") {
+		t.Fatalf("rendered settings missing runtime summary content: %q", body)
+	}
+	if !strings.Contains(body, "Restart CaddyTower") || !strings.Contains(body, "https://caddytower.pacsnode.com") || !strings.Contains(body, "caddytower.pacsnode.com") {
+		t.Fatalf("rendered settings missing restart or composed-url guidance: %q", body)
+	}
+	if !strings.Contains(body, "Optional: automatic DNS updates with Cloudflare") || !strings.Contains(body, "CaddyTower still works without Cloudflare") {
+		t.Fatalf("rendered settings missing optional cloudflare guidance: %q", body)
+	}
+	if strings.Contains(body, "VPS status") {
+		t.Fatalf("rendered settings should not include vps status card anymore: %q", body)
+	}
+}
+
+func TestRenderSetup(t *testing.T) {
+	t.Parallel()
+
+	webUI, err := New()
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	var buf bytes.Buffer
+	err = webUI.Render(&buf, "setup.gohtml", SetupPageData{
+		PageTitle:     "CaddyTower | Setup",
+		Headline:      "Create the first admin user",
+		Email:         "owner@example.com",
+		ManualKey:     "JBSWY3DPEHPK3PXP",
+		OTPAuthURL:    "otpauth://totp/CaddyTower:owner%40example.com?secret=JBSWY3DPEHPK3PXP&issuer=CaddyTower&period=30",
+		QRCodeDataURL: template.URL("data:image/png;base64,abc"),
+	})
+	if err != nil {
+		t.Fatalf("Render() error = %v", err)
+	}
+
+	body := buf.String()
+	for _, snippet := range []string{"data-setup-preview-form", "data-setup-email", "data-setup-secret", "data-setup-qr", "data-setup-otpauth"} {
+		if !strings.Contains(body, snippet) {
+			t.Fatalf("rendered setup missing preview hook %q: %q", snippet, body)
+		}
 	}
 }

@@ -10,7 +10,8 @@ CaddyTower is designed for a single VPS that already has:
 
 - Docker
 - the Docker Compose plugin
-- a domain managed in Cloudflare if you want automatic DNS records
+- a domain you control; Cloudflare is only needed if you want automatic DNS
+  records
 
 CaddyTower itself runs as a container. It does **not** build your apps on the
 VPS. Instead, it deploys container images you already publish to a registry
@@ -25,7 +26,7 @@ and stops so you can fill in the key values.
 | Variable | What it is | Example |
 | --- | --- | --- |
 | `CADDYTOWER_IMAGE` | The **controller image** for CaddyTower itself. This is **not** one of your app images. Docker Compose uses this to start the `caddytower` container. | `ghcr.io/knopkem/caddytower:latest` |
-| `CADDYTOWER_PUBLIC_BASE_URL` | The public URL browsers and webhooks use to reach the CaddyTower admin UI. Keep the local tunnel value for first login, then change it to the final HTTPS URL before exposing the app publicly. | `https://tower.example.com` |
+| `CADDYTOWER_PUBLIC_BASE_URL` | The public URL browsers and webhooks use to reach the CaddyTower admin UI. Most installs can keep the bootstrap default and let the app use `https://caddytower.<root-domain>` as the public admin hostname. | `https://caddytower.example.com` |
 | `CADDYTOWER_ROOT_DOMAIN` | The base domain CaddyTower should manage for generated app subdomains. If you deploy `blog`, it becomes `blog.example.com`. | `example.com` |
 
 ### How these values relate
@@ -34,13 +35,13 @@ and stops so you can fill in the key values.
   `https://tower.example.com`
 - **Root domain**: the domain used by your managed apps, usually something like
   `example.com`
-- **Origin hostname**: the hostname or public IP that Cloudflare should point
+- **Origin hostname**: the hostname or public IP your DNS records should point
   at; this is configured later in the **Settings** page, for example
   `vps.example.com` or `203.0.113.10`
 
 Those are different things. A common setup is:
 
-- `CADDYTOWER_PUBLIC_BASE_URL=https://tower.example.com`
+- `CADDYTOWER_PUBLIC_BASE_URL=https://caddytower.example.com`
 - `CADDYTOWER_ROOT_DOMAIN=example.com`
 - Settings → **Origin hostname** = `vps.example.com`
 
@@ -111,12 +112,10 @@ CADDYTOWER_ROOT_DOMAIN=example.com
 ```
 
 Use the local `http://127.0.0.1:8080` value only for the very first setup over
-an SSH tunnel. Before you expose CaddyTower publicly or use GitHub webhooks,
-change it to the final HTTPS URL:
-
-```dotenv
-CADDYTOWER_PUBLIC_BASE_URL=https://tower.example.com
-```
+an SSH tunnel. After that, CaddyTower will present `https://caddytower.<root-domain>`
+as the default public admin URL in the UI and manage the shared Caddy route for
+that hostname automatically. The remaining requirement is that the DNS record
+exists, either manually or through optional Cloudflare automation.
 
 `CADDYTOWER_MASTER_KEY` is generated automatically by the bootstrap script. Keep
 it private and stable. It encrypts project env values, TOTP secrets, database
@@ -159,7 +158,7 @@ The base domain CaddyTower manages for generated app hostnames, such as
 
 ### Origin hostname
 
-The hostname or public IP Cloudflare should point at. Examples:
+The hostname or public IP your DNS should point at. Examples:
 
 - `vps.example.com`
 - `203.0.113.10`
@@ -169,13 +168,16 @@ This is the machine where shared Caddy is actually listening on ports 80/443.
 ### Cloudflare zone ID and API token
 
 These are **optional**. Set them only if you want CaddyTower to create and
-update DNS records automatically.
+update DNS records automatically through Cloudflare.
 
-- **Zone ID**: the target Cloudflare zone
-- **API token**: use a token with DNS edit permissions for that zone only
+- **Zone ID**: open the target domain in Cloudflare and copy the **Zone ID**
+  from the overview page sidebar
+- **API token**: in Cloudflare open **Profile → API Tokens**, create a token
+  from the **Edit zone DNS** template or a custom token, and scope it to this
+  zone with `Zone:Read` and `DNS:Edit`
 
-If you leave them empty, CaddyTower can still route traffic, but you will manage
-DNS records in Cloudflare manually.
+If you leave them empty, CaddyTower still works. Just create the admin hostname
+and app subdomain records yourself with your DNS provider.
 
 ## 8. GitHub App setup for Import from GitHub
 
@@ -209,13 +211,8 @@ GitHub must be able to reach:
 https://<your-caddytower-host>/api/webhooks/github
 ```
 
-So before enabling the GitHub App flow, change:
-
-```dotenv
-CADDYTOWER_PUBLIC_BASE_URL=https://tower.example.com
-```
-
-and make sure Caddy is already serving that hostname publicly.
+So before enabling the GitHub App flow, make sure the public admin hostname
+(normally `https://caddytower.<root-domain>`) is already reachable over HTTPS.
 
 ### Step 2: create the GitHub App
 
@@ -384,7 +381,8 @@ needs a container image reference.
 ### "Can I leave CADDYTOWER_PUBLIC_BASE_URL as 127.0.0.1?"
 
 Only for the first SSH-tunnel setup. GitHub webhooks and real browser access
-need the final public HTTPS URL.
+need the final public HTTPS URL. In the normal flow, the app derives that from
+the root domain and the admin hostname DNS record.
 
 ### "Should CADDYTOWER_ROOT_DOMAIN be tower.example.com?"
 

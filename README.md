@@ -1,7 +1,7 @@
 # CaddyTower
 
 A tiny, RAM-friendly control plane for a single Docker VPS. CaddyTower turns
-shared Caddy + Docker + Cloudflare into a guided UI so you can ship GitHub
+shared Caddy + Docker, with optional Cloudflare DNS automation, into a guided UI so you can ship GitHub
 projects on small instances (2 GB RAM is the design target) without hand-editing
 config files.
 
@@ -85,9 +85,13 @@ After login, the dashboard walks you through four steps:
 
 1. **Welcome** — what CaddyTower does.
 2. **Domain** — set the root domain and origin hostname (or IP) in Settings.
-   Cloudflare points your subdomains at this origin.
+   Manual DNS works with any provider. If you use Cloudflare and want automatic
+   DNS updates, add the optional zone ID and API token there too. CaddyTower
+   uses `https://caddytower.<root-domain>` as the default admin hostname and
+   manages the shared Caddy route for it.
 3. **GitHub** — when you want repo imports, follow the GitHub setup guide in
-   Settings, restart if needed, then connect the GitHub App.
+   Settings after the public admin hostname is reachable, then connect the
+   GitHub App.
 4. **Deploy** — either:
    - **Import from GitHub** → pick a repo. CaddyTower detects the root
      `Dockerfile`, the first `EXPOSE` port, and an existing image-publishing
@@ -197,7 +201,7 @@ CGO_ENABLED=0 go test ./...
 ## HTTP surface (for reference)
 
 - `/` dashboard · `/setup` first admin · `/login` password + TOTP
-- `/settings` GitHub status, VPS health, backups, adoption, audit log
+- `/settings` GitHub status, VPS health, backups, audit log
 - `/projects/import` GitHub import wizard · `/github/install` install redirect
 - `/projects/{id}` operations page
 - `/projects/{id}/logs/stream` and `/events/stream` SSE

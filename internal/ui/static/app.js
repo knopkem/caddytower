@@ -43,6 +43,94 @@
     });
   };
 
+  const initSetupPreview = (root) => {
+    queryAll(root, "[data-setup-preview-form]").forEach((form) => {
+      if (form.dataset.setupPreviewBound === "true") {
+        return;
+      }
+      form.dataset.setupPreviewBound = "true";
+
+      const emailInput = form.querySelector("[data-setup-email]");
+      const secretInput = form.querySelector("[data-setup-secret]");
+      const previewURL = form.getAttribute("data-setup-preview-url");
+      const scope = form.closest(".auth-setup-grid") || root;
+      const qrImage = scope.querySelector("[data-setup-qr]");
+      const otpAuthValue = scope.querySelector("[data-setup-otpauth]");
+      if (!emailInput || !secretInput || !previewURL || !qrImage || !otpAuthValue) {
+        return;
+      }
+
+      const originalEmail = emailInput.value.trim().toLowerCase();
+      const originalQR = qrImage.getAttribute("src") || "";
+      const originalOTPAuth = otpAuthValue.textContent || "";
+      let controller;
+      let debounceTimer;
+      let lastRequestedEmail = originalEmail;
+
+      const restoreOriginal = () => {
+        qrImage.setAttribute("src", originalQR);
+        otpAuthValue.textContent = originalOTPAuth;
+        lastRequestedEmail = originalEmail;
+      };
+
+      const runPreview = () => {
+        const email = emailInput.value.trim().toLowerCase();
+        const secret = secretInput.value.trim();
+        if (!secret) {
+          return;
+        }
+        if (!email || email === originalEmail) {
+          controller?.abort();
+          restoreOriginal();
+          return;
+        }
+        if (email === lastRequestedEmail) {
+          return;
+        }
+
+        controller?.abort();
+        controller = new AbortController();
+        lastRequestedEmail = email;
+
+        fetch(`${previewURL}?email=${encodeURIComponent(email)}&secret=${encodeURIComponent(secret)}`, {
+          method: "GET",
+          headers: { Accept: "application/json" },
+          credentials: "same-origin",
+          signal: controller.signal,
+        })
+          .then(async (response) => {
+            if (!response.ok) {
+              throw new Error("preview request failed");
+            }
+            const payload = await response.json();
+            if (emailInput.value.trim().toLowerCase() !== email) {
+              return;
+            }
+            if (payload.qr_code_data_url) {
+              qrImage.setAttribute("src", payload.qr_code_data_url);
+            }
+            if (payload.otp_auth_url) {
+              otpAuthValue.textContent = payload.otp_auth_url;
+            }
+          })
+          .catch((error) => {
+            if (error?.name === "AbortError") {
+              return;
+            }
+            lastRequestedEmail = "";
+          });
+      };
+
+      const queuePreview = () => {
+        clearTimeout(debounceTimer);
+        debounceTimer = window.setTimeout(runPreview, 180);
+      };
+
+      emailInput.addEventListener("input", queuePreview);
+      emailInput.addEventListener("change", runPreview);
+    });
+  };
+
   const initDialogs = (root) => {
     queryAll(root, "[data-dialog-open]").forEach((button) => {
       button.addEventListener("click", () => {
@@ -430,6 +518,7 @@
     initDialogs(root);
     initConfirmDialogs(root);
     initProjectTypeForms(root);
+    initSetupPreview(root);
     initLogStreams(root);
     initWizards(root);
     initImageChecks(root);

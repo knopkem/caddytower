@@ -12,87 +12,102 @@
     <div id="page-loader" class="page-loader" aria-hidden="true"></div>
     <main id="app" class="shell auth-shell">
       <section class="auth-grid">
-        <article class="auth-panel">
+        <article class="auth-panel auth-panel-intro">
           <p class="brand-pill">CaddyTower</p>
-          <h1>{{if .Headline}}{{.Headline}}{{else}}Create the first admin user{{end}}</h1>
+          <h1 class="auth-hero-title">{{if .Headline}}{{.Headline}}{{else}}Create the first admin user{{end}}</h1>
           <p class="lede">
             This bootstrap flow is available only until the first admin user exists.
             Once setup is complete, CaddyTower will require password and TOTP for every
             login.
           </p>
-          <div class="summary-grid section-spacer">
-            <article class="summary-card">
-              <h3>1. Scan the QR</h3>
-              <p>Open your authenticator app on your phone and scan the TOTP QR code.</p>
+          <div class="auth-steps section-spacer">
+            <article class="auth-step">
+              <span class="auth-step-number">1</span>
+              <div>
+                <h3>Scan the QR code</h3>
+                <p>Open your authenticator app first so the current 6-digit code is ready.</p>
+              </div>
             </article>
-            <article class="summary-card">
-              <h3>2. Create the admin</h3>
-              <p>Pick a long password, enter the current 6-digit code, and save the account.</p>
+            <article class="auth-step">
+              <span class="auth-step-number">2</span>
+              <div>
+                <h3>Create the admin</h3>
+                <p>Use an email you control and a long password, then enter the code from your app.</p>
+              </div>
             </article>
-            <article class="summary-card">
-              <h3>3. Keep the app ready</h3>
-              <p>You will need the authenticator app every time you sign in later.</p>
+            <article class="auth-step">
+              <span class="auth-step-number">3</span>
+              <div>
+                <h3>Keep the authenticator app</h3>
+                <p>You will need it every time you sign in later.</p>
+              </div>
             </article>
+          </div>
+          <div class="hint-list section-spacer">
+            <p><strong>Best on desktop or laptop:</strong> keep this page open and scan the QR with your phone.</p>
+            <p><strong>Using one device only?</strong> Use the manual secret below instead of scanning.</p>
           </div>
         </article>
 
         <div class="stack">
           <article class="auth-panel">
-            <h2>Create the first admin</h2>
+            <h2>Finish bootstrap</h2>
             <p class="panel-copy">Use an email you control and a password with at least 12 characters.</p>
-            {{if .ErrorMessage}}<p class="alert" role="alert">{{.ErrorMessage}}</p>{{end}}
-            <form method="post" action="/setup" class="stack">
-              <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
-              <input type="hidden" name="totp_secret" value="{{.ManualKey}}">
-              <label class="field">
-                <span>Email</span>
-                <input type="email" name="email" value="{{.Email}}" autocomplete="username" required>
-              </label>
-              <label class="field">
-                <span>Password</span>
-                <input type="password" name="password" autocomplete="new-password" minlength="12" required>
-              </label>
-              <label class="field">
-                <span>Confirm password</span>
-                <input type="password" name="confirm_password" autocomplete="new-password" minlength="12" required>
-              </label>
-              <label class="field">
-                <span>Authenticator code</span>
-                <input type="text" name="code" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" maxlength="6" required>
-              </label>
-              <button type="submit">Create admin</button>
-            </form>
-          </article>
+            <div class="auth-setup-grid section-spacer">
+              <div class="stack">
+                {{if .ErrorMessage}}<p class="alert" role="alert">{{.ErrorMessage}}</p>{{end}}
+                <form method="post" action="/setup" class="stack" data-setup-preview-form data-setup-preview-url="/api/setup/totp-preview">
+                  <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+                  <input type="hidden" name="totp_secret" value="{{.ManualKey}}" data-setup-secret>
+                  <label class="field">
+                    <span>Email</span>
+                    <input type="email" name="email" value="{{.Email}}" autocomplete="username" data-setup-email required>
+                  </label>
+                  <label class="field">
+                    <span>Password</span>
+                    <input type="password" name="password" autocomplete="new-password" minlength="12" required>
+                  </label>
+                  <label class="field">
+                    <span>Confirm password</span>
+                    <input type="password" name="confirm_password" autocomplete="new-password" minlength="12" required>
+                  </label>
+                  <label class="field">
+                    <span>Authenticator code</span>
+                    <input type="text" name="code" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" maxlength="6" required>
+                    <small class="field-hint">Enter the current 6-digit code from your authenticator app.</small>
+                  </label>
+                  <button type="submit">Create admin</button>
+                </form>
+              </div>
 
-          <article class="auth-panel">
-            <h2>Set up TOTP</h2>
-            <p class="panel-copy">
-              Open any standard authenticator app on your phone and scan this QR code before
-              submitting the form.
-            </p>
-            {{if .QRCodeDataURL}}
-            <div class="qr-block section-spacer">
-              <img class="qr-image" src="{{.QRCodeDataURL}}" alt="TOTP QR code for CaddyTower setup">
-            </div>
-            {{end}}
-            <p class="muted">
-              Works with apps like 1Password, Bitwarden, Google Authenticator, Microsoft
-              Authenticator, Authy, Aegis, 2FAS, and other TOTP-compatible apps.
-            </p>
-            <dl class="kv section-spacer">
-              <div><dt>Issuer</dt><dd>CaddyTower</dd></div>
-              <div><dt>Manual secret</dt><dd class="mono">{{.ManualKey}}</dd></div>
-            </dl>
-            <div class="section-spacer">
-              <details class="help">
-                <summary>Can't scan?</summary>
-                <div class="help-body">
-                  <p>If you are setting up from the same device as your authenticator app, use the manual secret instead of scanning.</p>
-                  <dl class="kv">
-                    <div><dt>OTPAuth URL</dt><dd class="mono">{{.OTPAuthURL}}</dd></div>
-                  </dl>
+              <aside class="auth-totp-card">
+                <h3>Set up TOTP</h3>
+                <p class="panel-copy">
+                  Scan this QR code before submitting the form.
+                </p>
+                {{if .QRCodeDataURL}}
+                <div class="qr-block section-spacer">
+                  <img class="qr-image" src="{{.QRCodeDataURL}}" alt="TOTP QR code for CaddyTower setup" data-setup-qr>
                 </div>
-              </details>
+                {{end}}
+                <p class="muted">
+                  Works with apps like 1Password, Bitwarden, Google Authenticator, Microsoft
+                  Authenticator, Authy, Aegis, 2FAS, and other TOTP-compatible apps.
+                </p>
+                <dl class="kv section-spacer">
+                  <div><dt>Issuer</dt><dd>CaddyTower</dd></div>
+                  <div><dt>Manual secret</dt><dd class="mono">{{.ManualKey}}</dd></div>
+                </dl>
+                <details class="help section-spacer">
+                  <summary>Can't scan?</summary>
+                  <div class="help-body">
+                    <p>If you are setting up from the same device as your authenticator app, use the manual secret instead of scanning.</p>
+                    <dl class="kv">
+                      <div><dt>OTPAuth URL</dt><dd class="mono" data-setup-otpauth>{{.OTPAuthURL}}</dd></div>
+                    </dl>
+                  </div>
+                </details>
+              </aside>
             </div>
           </article>
         </div>
