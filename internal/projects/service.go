@@ -46,6 +46,7 @@ type dockerService interface {
 	ListContainersByLabel(context.Context, string, string) ([]dockerx.ContainerSummary, error)
 	RemoveContainer(context.Context, string) error
 	StreamLogs(context.Context, string, int) (io.ReadCloser, error)
+	Exec(context.Context, string, []string, []string, io.Writer, io.Writer) error
 }
 
 type caddyService interface {

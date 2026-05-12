@@ -39,7 +39,7 @@ func TestRouterServesHome(t *testing.T) {
 		PublicBaseURL: "http://localhost:8080",
 		DataDir:       "/tmp/caddytower",
 		CaddyAdminURL: "http://shared-caddy:2019",
-	}, webUI, newNoopLogger(), version.Info{Version: "test"}, nil, nil, nil)
+	}, webUI, newNoopLogger(), version.Info{Version: "test"}, nil, nil, nil, nil)
 
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	rec := httptest.NewRecorder()
@@ -70,7 +70,7 @@ func TestRootRedirectsToSetupWhenBootstrapRequired(t *testing.T) {
 		PublicBaseURL: "http://localhost:8080",
 		DataDir:       t.TempDir(),
 		CaddyAdminURL: "http://shared-caddy:2019",
-	}, webUI, newNoopLogger(), version.Info{Version: "test"}, stateStore, authService, nil)
+	}, webUI, newNoopLogger(), version.Info{Version: "test"}, stateStore, authService, nil, nil)
 
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	rec := httptest.NewRecorder()
@@ -119,7 +119,7 @@ func TestRootRedirectsToLoginAfterBootstrap(t *testing.T) {
 		PublicBaseURL: "http://localhost:8080",
 		DataDir:       t.TempDir(),
 		CaddyAdminURL: "http://shared-caddy:2019",
-	}, webUI, newNoopLogger(), version.Info{Version: "test"}, stateStore, authService, nil)
+	}, webUI, newNoopLogger(), version.Info{Version: "test"}, stateStore, authService, nil, nil)
 
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	rec := httptest.NewRecorder()
@@ -167,7 +167,7 @@ func TestDeployWebhookRedeploysProject(t *testing.T) {
 		DataDir:       t.TempDir(),
 		CaddyAdminURL: "http://shared-caddy:2019",
 		RootDomain:    "example.com",
-	}, webUI, newNoopLogger(), version.Info{Version: "test"}, stateStore, nil, projectService)
+	}, webUI, newNoopLogger(), version.Info{Version: "test"}, stateStore, nil, projectService, nil)
 
 	body := `{"ref":"refs/heads/main"}`
 	req := httptest.NewRequest(http.MethodPost, "/api/webhooks/deploy/books", strings.NewReader(body))
@@ -236,7 +236,7 @@ func TestProjectLogsStreamRequiresAuthAndStreams(t *testing.T) {
 		DataDir:       t.TempDir(),
 		CaddyAdminURL: "http://shared-caddy:2019",
 		RootDomain:    "example.com",
-	}, webUI, newNoopLogger(), version.Info{Version: "test"}, stateStore, authService, projectService)
+	}, webUI, newNoopLogger(), version.Info{Version: "test"}, stateStore, authService, projectService, nil)
 
 	req := httptest.NewRequest(http.MethodGet, "/projects/"+project.ID+"/logs/stream", nil)
 	req.AddCookie(&http.Cookie{Name: authService.SessionCookieName(), Value: token})
@@ -290,6 +290,9 @@ func (serverTestDocker) ListContainers(context.Context) ([]dockerx.ContainerSumm
 func (serverTestDocker) RemoveContainer(context.Context, string) error { return nil }
 func (d serverTestDocker) StreamLogs(context.Context, string, int) (io.ReadCloser, error) {
 	return io.NopCloser(strings.NewReader(d.logContent)), nil
+}
+func (serverTestDocker) Exec(context.Context, string, []string, []string, io.Writer, io.Writer) error {
+	return nil
 }
 
 type serverTestCaddy struct{}

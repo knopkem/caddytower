@@ -12,11 +12,13 @@ import (
 	"log/slog"
 	"net/http"
 	neturl "net/url"
+	"os"
 	"strconv"
 	"strings"
 	"time"
 
 	"caddytower/internal/auth"
+	"caddytower/internal/backups"
 	"caddytower/internal/config"
 	"caddytower/internal/projects"
 	"caddytower/internal/store"
@@ -35,6 +37,7 @@ type Server struct {
 	ready    readinessChecker
 	auth     *auth.Service
 	projects *projects.Service
+	backups  *backups.Service
 	limiter  *webhookRateLimiter
 }
 
@@ -42,7 +45,7 @@ type readinessChecker interface {
 	Ping(context.Context) error
 }
 
-func New(cfg config.Config, webUI *ui.UI, logger *slog.Logger, build version.Info, ready readinessChecker, authService *auth.Service, projectService *projects.Service) *Server {
+func New(cfg config.Config, webUI *ui.UI, logger *slog.Logger, build version.Info, ready readinessChecker, authService *auth.Service, projectService *projects.Service, backupService *backups.Service) *Server {
 	return &Server{
 		cfg:      cfg,
 		ui:       webUI,
@@ -51,6 +54,7 @@ func New(cfg config.Config, webUI *ui.UI, logger *slog.Logger, build version.Inf
 		ready:    ready,
 		auth:     authService,
 		projects: projectService,
+		backups:  backupService,
 		limiter:  newWebhookRateLimiter(10, time.Minute),
 	}
 }
@@ -92,6 +96,10 @@ func (s *Server) Router() http.Handler {
 			router.Post("/projects/{projectID}/databases/{attachmentID}/delete", s.handleProjectDBDelete)
 			router.Post("/projects/{projectID}/deploy", s.handleProjectRedeploy)
 			router.Post("/projects/{projectID}/delete", s.handleProjectDelete)
+		}
+		if s.backups != nil {
+			router.Post("/backups/run", s.handleBackupRun)
+			router.Get("/backups/{name}", s.handleBackupDownload)
 		}
 	}
 
@@ -138,6 +146,7 @@ func (s *Server) renderDashboard(w http.ResponseWriter, r *http.Request, current
 
 	settings := ui.SettingsFormData{}
 	projectItems := []ui.ProjectListItem{}
+	backupItems := []ui.BackupItem{}
 	if s.projects != nil {
 		dashboard, err := s.projects.Dashboard(r.Context())
 		if err != nil {
@@ -154,6 +163,21 @@ func (s *Server) renderDashboard(w http.ResponseWriter, r *http.Request, current
 		}
 		for _, project := range dashboard.Projects {
 			projectItems = append(projectItems, projectListItem(project))
+		}
+	}
+	if s.backups != nil {
+		snapshots, err := s.backups.ListSnapshots()
+		if err != nil {
+			s.logger.Error("list backups", "error", err)
+			http.Error(w, "failed to load dashboard", http.StatusInternalServerError)
+			return
+		}
+		for _, snapshot := range snapshots {
+			backupItems = append(backupItems, ui.BackupItem{
+				Name:      snapshot.Name,
+				CreatedAt: snapshot.CreatedAt.Format("2006-01-02 15:04:05 MST"),
+				Size:      humanSize(snapshot.SizeBytes),
+			})
 		}
 	}
 
@@ -185,12 +209,17 @@ func (s *Server) renderDashboard(w http.ResponseWriter, r *http.Request, current
 			DockerHost:    s.cfg.DockerHost,
 			MasterKeySet:  s.cfg.MasterKey != "",
 		},
-		CurrentUser:  currentUser,
-		ErrorMessage: errorMessage,
-		InfoMessage:  infoMessage,
-		Settings:     settings,
-		CreateForm:   createForm,
-		Projects:     projectItems,
+		CurrentUser:               currentUser,
+		ErrorMessage:              errorMessage,
+		InfoMessage:               infoMessage,
+		Settings:                  settings,
+		CreateForm:                createForm,
+		Projects:                  projectItems,
+		Backups:                   backupItems,
+		BackupsEnabled:            s.cfg.BackupsEnabled,
+		BackupsRetentionDays:      s.cfg.BackupsRetentionDays,
+		BackupsScheduleUTC:        s.cfg.BackupsScheduleUTC,
+		BackupsIncludeEngineDumps: s.cfg.BackupsIncludeEngineDumps,
 	}
 
 	if err := s.ui.Render(w, "home.gohtml", data); err != nil {
@@ -382,6 +411,51 @@ func (s *Server) handleAdoptProjects(w http.ResponseWriter, r *http.Request) {
 		message = fmt.Sprintf("Adopted %d existing projects", len(adopted))
 	}
 	http.Redirect(w, r, "/?info="+neturl.QueryEscape(message), http.StatusFound)
+}
+
+func (s *Server) handleBackupRun(w http.ResponseWriter, r *http.Request) {
+	user, ok := s.requireAuthenticated(w, r)
+	if !ok {
+		return
+	}
+	if !s.auth.ValidateCSRF(r) {
+		http.Error(w, "invalid csrf token", http.StatusForbidden)
+		return
+	}
+
+	snapshot, err := s.backups.RunNow(r.Context(), "manual")
+	if err != nil {
+		s.renderDashboard(w, r, user.Email, ui.ProjectFormData{
+			Type:              "web",
+			InternalPort:      3000,
+			WatchtowerEnabled: true,
+		}, err.Error(), "")
+		return
+	}
+
+	http.Redirect(w, r, "/?info="+neturl.QueryEscape("Backup created: "+snapshot.Name), http.StatusFound)
+}
+
+func (s *Server) handleBackupDownload(w http.ResponseWriter, r *http.Request) {
+	if _, ok := s.requireAuthenticatedForDownload(w, r); !ok {
+		return
+	}
+
+	file, snapshot, err := s.backups.OpenSnapshot(chi.URLParam(r, "name"))
+	if err != nil {
+		if os.IsNotExist(err) || strings.Contains(err.Error(), "invalid backup name") {
+			http.NotFound(w, r)
+			return
+		}
+		s.logger.Error("open backup", "error", err)
+		http.Error(w, "failed to open backup", http.StatusInternalServerError)
+		return
+	}
+	defer file.Close()
+
+	w.Header().Set("Content-Type", "application/gzip")
+	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q", snapshot.Name))
+	http.ServeContent(w, r, snapshot.Name, snapshot.CreatedAt, file)
 }
 
 func (s *Server) handleProjectPage(w http.ResponseWriter, r *http.Request) {
@@ -759,6 +833,31 @@ func (s *Server) requireAuthenticated(w http.ResponseWriter, r *http.Request) (a
 	return user, true
 }
 
+func (s *Server) requireAuthenticatedForDownload(w http.ResponseWriter, r *http.Request) (auth.User, bool) {
+	required, err := s.auth.BootstrapRequired(r.Context())
+	if err != nil {
+		s.logger.Error("check bootstrap status", "error", err)
+		http.Error(w, "failed to check bootstrap status", http.StatusInternalServerError)
+		return auth.User{}, false
+	}
+	if required {
+		http.Redirect(w, r, "/setup", http.StatusFound)
+		return auth.User{}, false
+	}
+
+	user, ok, err := s.currentUser(w, r)
+	if err != nil {
+		s.logger.Error("authenticate request", "error", err)
+		http.Error(w, "failed to authenticate request", http.StatusInternalServerError)
+		return auth.User{}, false
+	}
+	if !ok {
+		http.Error(w, "authentication required", http.StatusUnauthorized)
+		return auth.User{}, false
+	}
+	return user, true
+}
+
 func (s *Server) renderProjectPage(w http.ResponseWriter, r *http.Request, currentUser string, project projects.Project, form ui.ProjectFormData, errorMessage, infoMessage string) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 
@@ -943,6 +1042,24 @@ func projectEndpointSummary(project projects.Project) string {
 		return project.Subdomain
 	}
 	return strings.ReplaceAll(projects.PortMappingsText(project.Ports), "\n", ", ")
+}
+
+func humanSize(size int64) string {
+	const (
+		KB = 1024
+		MB = 1024 * KB
+		GB = 1024 * MB
+	)
+	switch {
+	case size >= GB:
+		return fmt.Sprintf("%.1f GB", float64(size)/GB)
+	case size >= MB:
+		return fmt.Sprintf("%.1f MB", float64(size)/MB)
+	case size >= KB:
+		return fmt.Sprintf("%.1f KB", float64(size)/KB)
+	default:
+		return fmt.Sprintf("%d B", size)
+	}
 }
 
 func validWebhookSignature(secret, provided string, payload []byte) bool {

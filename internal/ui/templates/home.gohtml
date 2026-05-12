@@ -202,6 +202,7 @@
             <div><dt>Caddy admin</dt><dd>{{.Config.CaddyAdminURL}}</dd></div>
             <div><dt>Docker host</dt><dd>{{if .Config.DockerHost}}{{.Config.DockerHost}}{{else}}docker default{{end}}</dd></div>
             <div><dt>Master key</dt><dd>{{if .Config.MasterKeySet}}configured{{else}}not set yet{{end}}</dd></div>
+            <div><dt>Backups</dt><dd>{{if .BackupsEnabled}}enabled{{else}}disabled{{end}}</dd></div>
           </dl>
         </article>
 
@@ -214,6 +215,51 @@
             <div><dt>Rendered</dt><dd>{{.GeneratedAt.Format "2006-01-02 15:04:05 MST"}}</dd></div>
           </dl>
         </article>
+      </section>
+
+      <section class="card">
+        <div class="section-head">
+          <h2>Backups</h2>
+          {{if .BackupsEnabled}}
+          <p class="muted">Scheduled at {{.BackupsScheduleUTC}} UTC, retained for {{.BackupsRetentionDays}} days{{if .BackupsIncludeEngineDumps}}, with shared engine dumps included{{else}}, without shared engine dumps{{end}}.</p>
+          <form method="post" action="/backups/run" class="inline-form">
+            <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+            <button type="submit" class="secondary">Run backup now</button>
+          </form>
+          {{else}}
+          <p class="muted">Backups are currently disabled. Enable them with <span class="mono">CADDYTOWER_BACKUPS_ENABLED=true</span> if you want scheduled snapshots.</p>
+          {{end}}
+        </div>
+        {{if .BackupsEnabled}}
+        {{if .Backups}}
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Name</th>
+                <th>Created</th>
+                <th>Size</th>
+                <th>Download</th>
+              </tr>
+            </thead>
+            <tbody>
+              {{range .Backups}}
+              <tr>
+                <td class="mono">{{.Name}}</td>
+                <td>{{.CreatedAt}}</td>
+                <td>{{.Size}}</td>
+                <td><a class="button-link" href="/backups/{{.Name}}">Download</a></td>
+              </tr>
+              {{end}}
+            </tbody>
+          </table>
+        </div>
+        {{else}}
+        <p class="muted">No backups yet.</p>
+        {{end}}
+        {{else}}
+        <p class="muted">Disabled by configuration to avoid using extra disk space.</p>
+        {{end}}
       </section>
     </main>
   </body>

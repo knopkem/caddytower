@@ -1,9 +1,11 @@
 package dockerx
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"io"
+	"net"
 	"strings"
 	"testing"
 
@@ -14,6 +16,7 @@ import (
 	"github.com/docker/docker/api/types/image"
 	"github.com/docker/docker/api/types/network"
 	"github.com/docker/docker/errdefs"
+	"github.com/docker/docker/pkg/stdcopy"
 	"github.com/docker/go-connections/nat"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 )
@@ -151,6 +154,43 @@ func TestPullImageDrainsReader(t *testing.T) {
 	}
 }
 
+func TestExecStreamsOutputAndChecksExitCode(t *testing.T) {
+	t.Parallel()
+
+	fake := &fakeAPIClient{
+		containerExecCreateFn: func(_ context.Context, containerName string, opts container.ExecOptions) (types.IDResponse, error) {
+			if containerName != "demo" {
+				t.Fatalf("containerName = %q", containerName)
+			}
+			if got := strings.Join(opts.Cmd, " "); got != "echo hello" {
+				t.Fatalf("cmd = %q", got)
+			}
+			return types.IDResponse{ID: "exec-1"}, nil
+		},
+		containerExecAttachFn: func(context.Context, string, container.ExecAttachOptions) (types.HijackedResponse, error) {
+			server, client := net.Pipe()
+			go func() {
+				defer server.Close()
+				writer := stdcopy.NewStdWriter(server, stdcopy.Stdout)
+				_, _ = io.WriteString(writer, "hello from exec\n")
+			}()
+			return types.HijackedResponse{Conn: client, Reader: bufio.NewReader(client)}, nil
+		},
+		containerExecInspectFn: func(context.Context, string) (container.ExecInspect, error) {
+			return container.ExecInspect{Running: false, ExitCode: 0}, nil
+		},
+	}
+
+	service := New(fake)
+	var stdout strings.Builder
+	if err := service.Exec(context.Background(), "demo", []string{"echo", "hello"}, nil, &stdout, io.Discard); err != nil {
+		t.Fatalf("Exec() error = %v", err)
+	}
+	if got := stdout.String(); got != "hello from exec\n" {
+		t.Fatalf("stdout = %q", got)
+	}
+}
+
 func TestNewFromEnvUsesExplicitDockerHost(t *testing.T) {
 	t.Parallel()
 
@@ -163,18 +203,21 @@ func TestNewFromEnvUsesExplicitDockerHost(t *testing.T) {
 }
 
 type fakeAPIClient struct {
-	pingFn             func(context.Context) (types.Ping, error)
-	imagePullFn        func(context.Context, string, image.PullOptions) (io.ReadCloser, error)
-	containerListFn    func(context.Context, container.ListOptions) ([]types.Container, error)
-	containerInspectFn func(context.Context, string) (types.ContainerJSON, error)
-	containerStopFn    func(context.Context, string, container.StopOptions) error
-	containerRemoveFn  func(context.Context, string, container.RemoveOptions) error
-	containerCreateFn  func(context.Context, *container.Config, *container.HostConfig, *network.NetworkingConfig, *ocispec.Platform, string) (container.CreateResponse, error)
-	containerStartFn   func(context.Context, string, container.StartOptions) error
-	containerLogsFn    func(context.Context, string, container.LogsOptions) (io.ReadCloser, error)
-	networkListFn      func(context.Context, network.ListOptions) ([]network.Summary, error)
-	networkCreateFn    func(context.Context, string, network.CreateOptions) (network.CreateResponse, error)
-	networkConnectFn   func(context.Context, string, string, *network.EndpointSettings) error
+	pingFn                 func(context.Context) (types.Ping, error)
+	imagePullFn            func(context.Context, string, image.PullOptions) (io.ReadCloser, error)
+	containerListFn        func(context.Context, container.ListOptions) ([]types.Container, error)
+	containerInspectFn     func(context.Context, string) (types.ContainerJSON, error)
+	containerStopFn        func(context.Context, string, container.StopOptions) error
+	containerRemoveFn      func(context.Context, string, container.RemoveOptions) error
+	containerCreateFn      func(context.Context, *container.Config, *container.HostConfig, *network.NetworkingConfig, *ocispec.Platform, string) (container.CreateResponse, error)
+	containerStartFn       func(context.Context, string, container.StartOptions) error
+	containerLogsFn        func(context.Context, string, container.LogsOptions) (io.ReadCloser, error)
+	containerExecCreateFn  func(context.Context, string, container.ExecOptions) (types.IDResponse, error)
+	containerExecAttachFn  func(context.Context, string, container.ExecAttachOptions) (types.HijackedResponse, error)
+	containerExecInspectFn func(context.Context, string) (container.ExecInspect, error)
+	networkListFn          func(context.Context, network.ListOptions) ([]network.Summary, error)
+	networkCreateFn        func(context.Context, string, network.CreateOptions) (network.CreateResponse, error)
+	networkConnectFn       func(context.Context, string, string, *network.EndpointSettings) error
 }
 
 func (f *fakeAPIClient) Ping(ctx context.Context) (types.Ping, error) {
@@ -220,6 +263,29 @@ func (f *fakeAPIClient) ContainerStart(ctx context.Context, id string, opts cont
 
 func (f *fakeAPIClient) ContainerLogs(ctx context.Context, name string, opts container.LogsOptions) (io.ReadCloser, error) {
 	return f.containerLogsFn(ctx, name, opts)
+}
+
+func (f *fakeAPIClient) ContainerExecCreate(ctx context.Context, containerName string, opts container.ExecOptions) (types.IDResponse, error) {
+	if f.containerExecCreateFn == nil {
+		return types.IDResponse{ID: "exec-default"}, nil
+	}
+	return f.containerExecCreateFn(ctx, containerName, opts)
+}
+
+func (f *fakeAPIClient) ContainerExecAttach(ctx context.Context, execID string, opts container.ExecAttachOptions) (types.HijackedResponse, error) {
+	if f.containerExecAttachFn == nil {
+		server, client := net.Pipe()
+		go server.Close()
+		return types.HijackedResponse{Conn: client, Reader: bufio.NewReader(client)}, nil
+	}
+	return f.containerExecAttachFn(ctx, execID, opts)
+}
+
+func (f *fakeAPIClient) ContainerExecInspect(ctx context.Context, execID string) (container.ExecInspect, error) {
+	if f.containerExecInspectFn == nil {
+		return container.ExecInspect{ExecID: execID, ExitCode: 0}, nil
+	}
+	return f.containerExecInspectFn(ctx, execID)
 }
 
 func (f *fakeAPIClient) NetworkList(ctx context.Context, opts network.ListOptions) ([]network.Summary, error) {

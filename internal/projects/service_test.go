@@ -402,6 +402,9 @@ func (f *fakeDocker) RemoveContainer(context.Context, string) error {
 func (f *fakeDocker) StreamLogs(context.Context, string, int) (io.ReadCloser, error) {
 	return io.NopCloser(strings.NewReader(f.logContent)), nil
 }
+func (f *fakeDocker) Exec(context.Context, string, []string, []string, io.Writer, io.Writer) error {
+	return nil
+}
 
 type fakeCaddy struct {
 	managedHosts []string

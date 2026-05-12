@@ -88,18 +88,29 @@ type DBAttachmentFormData struct {
 }
 
 type HomePageData struct {
-	GeneratedAt  time.Time
-	PageTitle    string
-	Headline     string
-	CSRFToken    string
-	Version      version.Info
-	Config       ConfigSummary
-	CurrentUser  string
-	InfoMessage  string
-	ErrorMessage string
-	Settings     SettingsFormData
-	CreateForm   ProjectFormData
-	Projects     []ProjectListItem
+	GeneratedAt               time.Time
+	PageTitle                 string
+	Headline                  string
+	CSRFToken                 string
+	Version                   version.Info
+	Config                    ConfigSummary
+	CurrentUser               string
+	InfoMessage               string
+	ErrorMessage              string
+	Settings                  SettingsFormData
+	CreateForm                ProjectFormData
+	Projects                  []ProjectListItem
+	Backups                   []BackupItem
+	BackupsEnabled            bool
+	BackupsRetentionDays      int
+	BackupsScheduleUTC        string
+	BackupsIncludeEngineDumps bool
+}
+
+type BackupItem struct {
+	Name      string
+	CreatedAt string
+	Size      string
 }
 
 type SetupPageData struct {

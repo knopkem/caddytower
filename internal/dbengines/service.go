@@ -1,10 +1,14 @@
 package dbengines
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"fmt"
+	"io"
 	"math/rand/v2"
+	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"time"
@@ -38,6 +42,7 @@ var identifierSanitizer = regexp.MustCompile(`[^a-z0-9_]+`)
 type dockerService interface {
 	InspectContainer(context.Context, string) (dockerx.ContainerInspect, error)
 	RecreateContainer(context.Context, dockerx.ContainerSpec) (dockerx.ContainerInspect, error)
+	Exec(context.Context, string, []string, []string, io.Writer, io.Writer) error
 }
 
 type Service struct {
@@ -200,6 +205,81 @@ func (s *Service) DeleteAttachment(ctx context.Context, attachmentID int64) erro
 	return s.store.DeleteDBAttachment(ctx, attachmentID)
 }
 
+func (s *Service) DumpAll(ctx context.Context, destDir string) ([]string, error) {
+	if s.docker == nil {
+		return nil, nil
+	}
+	if err := os.MkdirAll(destDir, 0o755); err != nil {
+		return nil, fmt.Errorf("create engine backup dir: %w", err)
+	}
+
+	type engineDump struct {
+		engine   string
+		fileName string
+		command  []string
+		env      []string
+	}
+
+	dumps := []engineDump{
+		{
+			engine:   enginePostgres,
+			fileName: "postgres.sql",
+			command:  []string{"pg_dumpall", "-U", "postgres"},
+		},
+		{
+			engine:   engineMariaDB,
+			fileName: "mariadb.sql",
+			command:  []string{"mariadb-dump", "-uroot", "--all-databases", "--single-transaction", "--quick", "--lock-tables=false"},
+		},
+	}
+
+	var written []string
+	for _, dump := range dumps {
+		password, ok, err := s.rootPasswordIfPresent(ctx, dump.engine)
+		if err != nil {
+			return nil, err
+		}
+		if !ok {
+			continue
+		}
+		if _, err := s.ensureEngine(ctx, dump.engine); err != nil {
+			return nil, err
+		}
+
+		env := append([]string(nil), dump.env...)
+		if dump.engine == enginePostgres {
+			env = append(env, "PGPASSWORD="+password)
+		} else {
+			env = append(env, "MYSQL_PWD="+password)
+		}
+
+		path := filepath.Join(destDir, dump.fileName)
+		file, err := os.Create(path)
+		if err != nil {
+			return nil, fmt.Errorf("create %s backup file: %w", dump.engine, err)
+		}
+
+		var stderr bytes.Buffer
+		err = s.docker.Exec(ctx, engineHost(dump.engine), dump.command, env, file, &stderr)
+		closeErr := file.Close()
+		if err != nil {
+			_ = os.Remove(path)
+			if stderr.Len() > 0 {
+				return nil, fmt.Errorf("%s backup failed: %w: %s", dump.engine, err, strings.TrimSpace(stderr.String()))
+			}
+			return nil, fmt.Errorf("%s backup failed: %w", dump.engine, err)
+		}
+		if closeErr != nil {
+			_ = os.Remove(path)
+			return nil, fmt.Errorf("close %s backup file: %w", dump.engine, closeErr)
+		}
+
+		written = append(written, path)
+	}
+
+	return written, nil
+}
+
 func (s *Service) ensureEngine(ctx context.Context, engine string) (dockerx.ContainerInspect, error) {
 	name := engineHost(engine)
 	if s.docker == nil {
@@ -244,22 +324,16 @@ func (s *Service) ensureEngine(ctx context.Context, engine string) (dockerx.Cont
 }
 
 func (s *Service) rootPassword(ctx context.Context, engine string) (string, error) {
-	key := settingPostgresRootPassword
-	if engine == engineMariaDB {
-		key = settingMariaDBRootPassword
-	}
-
-	values, err := s.store.GetSettings(ctx, key)
+	password, ok, err := s.rootPasswordIfPresent(ctx, engine)
 	if err != nil {
 		return "", err
 	}
-
-	existing := strings.TrimSpace(values[key])
-	if existing != "" {
-		return s.decodeSecret(existing)
+	if ok {
+		return password, nil
 	}
 
-	password := randomPassword(30)
+	key := rootPasswordSetting(engine)
+	password = randomPassword(30)
 	encoded, err := s.encodeSecret(password)
 	if err != nil {
 		return "", err
@@ -268,8 +342,31 @@ func (s *Service) rootPassword(ctx context.Context, engine string) (string, erro
 	if err := s.store.UpsertSettings(ctx, map[string]string{key: encoded}); err != nil {
 		return "", err
 	}
-
 	return password, nil
+}
+
+func (s *Service) rootPasswordIfPresent(ctx context.Context, engine string) (string, bool, error) {
+	key := rootPasswordSetting(engine)
+	values, err := s.store.GetSettings(ctx, key)
+	if err != nil {
+		return "", false, err
+	}
+
+	existing := strings.TrimSpace(values[key])
+	if existing == "" {
+		return "", false, nil
+	}
+
+	password, err := s.decodeSecret(existing)
+	return password, true, err
+}
+
+func rootPasswordSetting(engine string) string {
+	key := settingPostgresRootPassword
+	if engine == engineMariaDB {
+		key = settingMariaDBRootPassword
+	}
+	return key
 }
 
 func (s *Service) provisionDatabase(ctx context.Context, engine, dbName, dbUser, password string) error {

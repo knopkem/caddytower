@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"caddytower/internal/config"
 
@@ -33,6 +34,9 @@ type apiClient interface {
 	ContainerCreate(context.Context, *container.Config, *container.HostConfig, *network.NetworkingConfig, *ocispec.Platform, string) (container.CreateResponse, error)
 	ContainerStart(context.Context, string, container.StartOptions) error
 	ContainerLogs(context.Context, string, container.LogsOptions) (io.ReadCloser, error)
+	ContainerExecCreate(context.Context, string, container.ExecOptions) (types.IDResponse, error)
+	ContainerExecAttach(context.Context, string, container.ExecAttachOptions) (types.HijackedResponse, error)
+	ContainerExecInspect(context.Context, string) (container.ExecInspect, error)
 	NetworkList(context.Context, network.ListOptions) ([]network.Summary, error)
 	NetworkCreate(context.Context, string, network.CreateOptions) (network.CreateResponse, error)
 	NetworkConnect(context.Context, string, string, *network.EndpointSettings) error
@@ -312,6 +316,60 @@ func (s *Service) StreamLogs(ctx context.Context, containerName string, tail int
 	}()
 
 	return pipeReader, nil
+}
+
+func (s *Service) Exec(ctx context.Context, containerName string, command, env []string, stdout, stderr io.Writer) error {
+	if strings.TrimSpace(containerName) == "" {
+		return fmt.Errorf("container name must not be empty")
+	}
+	if len(command) == 0 {
+		return fmt.Errorf("exec command must not be empty")
+	}
+	if stdout == nil {
+		stdout = io.Discard
+	}
+	if stderr == nil {
+		stderr = io.Discard
+	}
+
+	created, err := s.api.ContainerExecCreate(ctx, containerName, container.ExecOptions{
+		AttachStdout: true,
+		AttachStderr: true,
+		Cmd:          append([]string(nil), command...),
+		Env:          append([]string(nil), env...),
+	})
+	if err != nil {
+		return fmt.Errorf("create exec in %s: %w", containerName, err)
+	}
+
+	attached, err := s.api.ContainerExecAttach(ctx, created.ID, container.ExecAttachOptions{})
+	if err != nil {
+		return fmt.Errorf("attach exec %s in %s: %w", created.ID, containerName, err)
+	}
+	defer attached.Close()
+
+	if _, err := stdcopy.StdCopy(stdout, stderr, attached.Reader); err != nil && err != io.EOF {
+		return fmt.Errorf("read exec output for %s: %w", containerName, err)
+	}
+
+	for {
+		inspect, err := s.api.ContainerExecInspect(ctx, created.ID)
+		if err != nil {
+			return fmt.Errorf("inspect exec %s in %s: %w", created.ID, containerName, err)
+		}
+		if !inspect.Running {
+			if inspect.ExitCode != 0 {
+				return fmt.Errorf("exec in %s exited with code %d", containerName, inspect.ExitCode)
+			}
+			return nil
+		}
+
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(100 * time.Millisecond):
+		}
+	}
 }
 
 func mapsClone[K comparable, V any](input map[K]V) map[K]V {
