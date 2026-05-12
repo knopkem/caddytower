@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 
+declare -a CADDYTOWER_DOCKER_CMD=(docker)
+
 caddytower_log() {
   printf '%s\n' "$*"
 }
@@ -23,14 +25,49 @@ caddytower_require_command() {
   fi
 }
 
+caddytower_run_sudo() {
+  if [[ "${EUID:-$(id -u)}" -eq 0 ]]; then
+    "$@"
+    return
+  fi
+  sudo "$@"
+}
+
+caddytower_request_sudo() {
+  local reason="${1:-perform privileged operations}"
+  if [[ "${EUID:-$(id -u)}" -eq 0 ]]; then
+    return 0
+  fi
+  caddytower_require_command sudo
+  caddytower_log "Requesting sudo to ${reason}..."
+  if ! sudo -v; then
+    caddytower_die "sudo access is required to ${reason}"
+  fi
+}
+
+caddytower_docker() {
+  "${CADDYTOWER_DOCKER_CMD[@]}" "$@"
+}
+
 caddytower_require_docker() {
   caddytower_require_command docker
 
-  if ! docker info >/dev/null 2>&1; then
-    caddytower_die "docker is installed but the daemon is not reachable."
+  if docker info >/dev/null 2>&1; then
+    CADDYTOWER_DOCKER_CMD=(docker)
+  else
+    if [[ "${EUID:-$(id -u)}" -ne 0 ]]; then
+      caddytower_request_sudo "access Docker"
+      if sudo docker info >/dev/null 2>&1; then
+        CADDYTOWER_DOCKER_CMD=(sudo docker)
+      else
+        caddytower_die "docker is installed but the daemon is not reachable."
+      fi
+    else
+      caddytower_die "docker is installed but the daemon is not reachable."
+    fi
   fi
 
-  if ! docker compose version >/dev/null 2>&1; then
+  if ! caddytower_docker compose version >/dev/null 2>&1; then
     caddytower_die "docker compose is required. Install Docker with the Compose plugin."
   fi
 }
@@ -113,6 +150,34 @@ caddytower_fetch_to_file() {
   curl --fail --silent --show-error --location "${url}" --output "${dest_path}"
 }
 
+caddytower_prepare_target_dir() {
+  local target_dir="${1:-}"
+  local probe_file=""
+
+  [[ -n "${target_dir}" ]] || caddytower_die "internal error: missing target directory"
+
+  mkdir -p "${target_dir}" 2>/dev/null || true
+  probe_file="${target_dir}/.caddytower-write-test.$$"
+  if [[ -d "${target_dir}" ]] && : > "${probe_file}" 2>/dev/null; then
+    rm -f "${probe_file}"
+    return 0
+  fi
+
+  caddytower_request_sudo "create and manage ${target_dir}"
+  caddytower_run_sudo mkdir -p "${target_dir}"
+  if [[ "${EUID:-$(id -u)}" -ne 0 ]]; then
+    caddytower_run_sudo chown -R "$(id -un):$(id -gn)" "${target_dir}"
+  fi
+
+  probe_file="${target_dir}/.caddytower-write-test.$$"
+  if [[ -d "${target_dir}" ]] && : > "${probe_file}" 2>/dev/null; then
+    rm -f "${probe_file}"
+    return 0
+  fi
+
+  caddytower_die "could not make ${target_dir} writable for the current user"
+}
+
 caddytower_get_env_value() {
   local file_path="${1:-}"
   local key="${2:-}"
@@ -179,8 +244,8 @@ caddytower_generate_master_key_if_needed() {
 }
 
 caddytower_ensure_edge_network() {
-  if ! docker network inspect edge >/dev/null 2>&1; then
-    docker network create edge >/dev/null
+  if ! caddytower_docker network inspect edge >/dev/null 2>&1; then
+    caddytower_docker network create edge >/dev/null
     caddytower_log "Created Docker network: edge"
   fi
 }
@@ -226,19 +291,19 @@ caddytower_compose_up() {
 
   [[ -n "${target_dir}" ]] || caddytower_die "internal error: missing target directory"
 
-  if ! docker container inspect shared-caddy >/dev/null 2>&1; then
+  if ! caddytower_docker container inspect shared-caddy >/dev/null 2>&1; then
     compose_profiles+=(--profile bundled-caddy)
     caddytower_log "No shared-caddy container found; bootstrap will start the bundled Caddy service."
   fi
 
-  if ! docker container inspect watchtower >/dev/null 2>&1; then
+  if ! caddytower_docker container inspect watchtower >/dev/null 2>&1; then
     compose_profiles+=(--profile bundled-watchtower)
     caddytower_log "No watchtower container found; bootstrap will start the bundled Watchtower service."
   fi
 
   (
     cd "${target_dir}"
-    docker compose "${compose_profiles[@]}" up -d
+    caddytower_docker compose "${compose_profiles[@]}" up -d
   )
 }
 

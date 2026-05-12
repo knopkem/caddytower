@@ -81,6 +81,9 @@ This installer:
 - leaves GitHub App setup for later by default so first login is simpler
 - starts bundled `shared-caddy` and `watchtower` only when they are missing
 
+If `/opt/caddytower` or Docker access requires elevated privileges, the
+installer asks for `sudo` when needed.
+
 If you explicitly want the moving branch instead of the latest tagged release:
 
 ```bash

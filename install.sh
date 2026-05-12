@@ -417,7 +417,7 @@ CADDYFILE_DEST="${TARGET_DIR}/Caddyfile"
 IMAGE_REF="$(normalize_image_ref "${IMAGE_REF}")"
 
 caddytower_require_docker
-mkdir -p "${TARGET_DIR}"
+caddytower_prepare_target_dir "${TARGET_DIR}"
 caddytower_ensure_edge_network
 
 download_asset "deploy/docker-compose.caddytower.yml" "${COMPOSE_DEST}"

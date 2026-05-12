@@ -54,6 +54,9 @@ assets for that tag, writes `/opt/caddytower`, generates
 `CADDYTOWER_MASTER_KEY`, and starts bundled `shared-caddy` / `watchtower` only
 when they are missing.
 
+If the target directory or Docker access needs elevated privileges, the script
+will request `sudo` when needed instead of failing immediately.
+
 The controller binds to `127.0.0.1:8080` only, so the first login goes through
 an SSH tunnel:
 

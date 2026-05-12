@@ -22,7 +22,7 @@ source "${COMMON_LIB}"
 
 caddytower_require_docker
 
-mkdir -p "${TARGET_DIR}"
+caddytower_prepare_target_dir "${TARGET_DIR}"
 caddytower_ensure_edge_network
 
 if [[ ! -f "${ENV_DEST}" ]]; then
