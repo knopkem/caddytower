@@ -41,6 +41,13 @@ import (
 
 const defaultSetupEmail = "admin@example.com"
 
+const (
+	settingsRestartRequiredQuery = "restart_required"
+	settingsRestartTitleQuery    = "restart_title"
+	settingsRestartMessageQuery  = "restart_message"
+	settingsRestartActionQuery   = "restart_action"
+)
+
 type Server struct {
 	cfg                          config.Config
 	ui                           *ui.UI
@@ -1534,6 +1541,7 @@ func (s *Server) renderSettingsPage(w http.ResponseWriter, r *http.Request, curr
 		VPSStatus:                 s.vpsStatusData(),
 		AuditFilter:               strings.TrimSpace(r.URL.Query().Get("audit")),
 		ControllerUpdate:          s.controllerUpdateStatusFunc(r.Context()),
+		RestartPrompt:             restartPromptFromRequest(r),
 	}
 	if s.projects != nil {
 		entries, err := s.projects.AuditLogs(r.Context(), data.AuditFilter, 50)
@@ -1556,6 +1564,47 @@ func (s *Server) renderSettingsPage(w http.ResponseWriter, r *http.Request, curr
 		s.logger.Error("render settings page", "error", err)
 		http.Error(w, "failed to render page", http.StatusInternalServerError)
 	}
+}
+
+func restartPromptFromRequest(r *http.Request) ui.RestartPromptData {
+	if r == nil {
+		return ui.RestartPromptData{}
+	}
+	query := r.URL.Query()
+	if !projects.ParseBoolCheckbox(query.Get(settingsRestartRequiredQuery)) {
+		return ui.RestartPromptData{}
+	}
+
+	title := strings.TrimSpace(query.Get(settingsRestartTitleQuery))
+	if title == "" {
+		title = "Restart required"
+	}
+	message := strings.TrimSpace(query.Get(settingsRestartMessageQuery))
+	if message == "" {
+		message = "These changes will take effect after CaddyTower restarts."
+	}
+	actionLabel := strings.TrimSpace(query.Get(settingsRestartActionQuery))
+	if actionLabel == "" {
+		actionLabel = "Restart now"
+	}
+	return ui.RestartPromptData{
+		Visible:     true,
+		Title:       title,
+		Message:     message,
+		ActionLabel: actionLabel,
+	}
+}
+
+func settingsRestartPromptURL(infoMessage, promptMessage string) string {
+	values := neturl.Values{}
+	if strings.TrimSpace(infoMessage) != "" {
+		values.Set("info", strings.TrimSpace(infoMessage))
+	}
+	values.Set(settingsRestartRequiredQuery, "true")
+	if strings.TrimSpace(promptMessage) != "" {
+		values.Set(settingsRestartMessageQuery, strings.TrimSpace(promptMessage))
+	}
+	return "/settings?" + values.Encode()
 }
 
 func (s *Server) gitHubStatusData(ctx context.Context) ui.GitHubStatusData {

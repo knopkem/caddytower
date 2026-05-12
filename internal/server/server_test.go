@@ -805,6 +805,69 @@ func TestSettingsPageShowsControllerUpdateAction(t *testing.T) {
 	}
 }
 
+func TestSettingsPageShowsRestartPromptWhenRequested(t *testing.T) {
+	t.Parallel()
+
+	webUI, err := ui.New()
+	if err != nil {
+		t.Fatalf("ui.New() error = %v", err)
+	}
+
+	stateStore := openServerTestStore(t)
+	authService := auth.New(stateStore, nil, "http://localhost:8080")
+	fixedNow := time.Date(2026, 5, 12, 7, 0, 0, 0, time.UTC)
+	authService.SetNow(func() time.Time { return fixedNow })
+	enrollment, err := authService.GenerateEnrollment("admin@example.com")
+	if err != nil {
+		t.Fatalf("GenerateEnrollment() error = %v", err)
+	}
+	code, err := totp.GenerateCodeCustom(enrollment.Secret, fixedNow, totp.ValidateOpts{
+		Period:    30,
+		Skew:      1,
+		Digits:    otp.DigitsSix,
+		Algorithm: otp.AlgorithmSHA1,
+	})
+	if err != nil {
+		t.Fatalf("GenerateCodeCustom() error = %v", err)
+	}
+	token, _, err := authService.CreateInitialUser(context.Background(), "admin@example.com", "super-secure-password", "super-secure-password", enrollment.Secret, code, "127.0.0.1", "test-agent")
+	if err != nil {
+		t.Fatalf("CreateInitialUser() error = %v", err)
+	}
+
+	projectService := projects.New(config.Config{
+		HTTPAddr:      ":8080",
+		PublicBaseURL: "http://localhost:8080",
+		DataDir:       t.TempDir(),
+		CaddyAdminURL: "http://shared-caddy:2019",
+	}, stateStore, nil, nil, nil, newNoopLogger())
+	srv := New(config.Config{
+		HTTPAddr:      ":8080",
+		PublicBaseURL: "http://localhost:8080",
+		DataDir:       t.TempDir(),
+		CaddyAdminURL: "http://shared-caddy:2019",
+	}, webUI, newNoopLogger(), version.Info{Version: "v1.0.0"}, stateStore, authService, projectService, nil, nil)
+
+	req := httptest.NewRequest(http.MethodGet, "/settings?restart_required=true&restart_message=Restart+to+apply+these+changes.", nil)
+	req.AddCookie(&http.Cookie{Name: authService.SessionCookieName(), Value: token})
+	rec := httptest.NewRecorder()
+
+	srv.Router().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+	body := rec.Body.String()
+	for _, snippet := range []string{"Restart required", "Restart to apply these changes.", "Restart now"} {
+		if !strings.Contains(body, snippet) {
+			t.Fatalf("settings page missing restart prompt snippet %q: %q", snippet, body)
+		}
+	}
+	if strings.Contains(body, "Use this card to check the current release") {
+		t.Fatalf("settings page still contains stale static restart guidance: %q", body)
+	}
+}
+
 func TestSettingsUpdateSchedulesControllerUpdate(t *testing.T) {
 	t.Parallel()
 

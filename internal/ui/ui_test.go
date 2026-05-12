@@ -103,6 +103,12 @@ func TestRenderSettings(t *testing.T) {
 			ButtonLabel:      "Update and restart",
 			LatestReleaseURL: "https://github.com/knopkem/caddytower/releases/tag/v1.1.0",
 		},
+		RestartPrompt: RestartPromptData{
+			Visible:     true,
+			Title:       "Restart required",
+			Message:     "These changes will take effect after CaddyTower restarts.",
+			ActionLabel: "Restart now",
+		},
 	})
 	if err != nil {
 		t.Fatalf("Render() error = %v", err)
@@ -126,6 +132,12 @@ func TestRenderSettings(t *testing.T) {
 	}
 	if !strings.Contains(body, "Latest release") || !strings.Contains(body, "Update and restart") || !strings.Contains(body, "A newer release is available.") {
 		t.Fatalf("rendered settings missing controller update UI: %q", body)
+	}
+	if !strings.Contains(body, "Restart required") || !strings.Contains(body, "Restart now") {
+		t.Fatalf("rendered settings missing restart prompt UI: %q", body)
+	}
+	if strings.Contains(body, "Use this card to check the current release") {
+		t.Fatalf("rendered settings should not include static restart guidance anymore: %q", body)
 	}
 	if strings.Contains(body, "CADDYTOWER_GITHUB_APP_ID") || strings.Contains(body, "/run/secrets/github-app.pem") {
 		t.Fatalf("rendered settings should not include legacy env-based github guidance: %q", body)

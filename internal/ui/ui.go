@@ -271,6 +271,7 @@ type SettingsPageData struct {
 	AuditFilter               string
 	AuditLogs                 []AuditLogItem
 	ControllerUpdate          ControllerUpdateData
+	RestartPrompt             RestartPromptData
 }
 
 type ControllerUpdateData struct {
@@ -287,6 +288,13 @@ type ControllerUpdateData struct {
 	TrackingLatest      bool
 	CurrentChannel      string
 	CurrentChannelIsDev bool
+}
+
+type RestartPromptData struct {
+	Visible     bool
+	Title       string
+	Message     string
+	ActionLabel string
 }
 
 type GitHubRepositoryItem struct {

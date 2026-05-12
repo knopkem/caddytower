@@ -30,6 +30,22 @@
 
       {{template "error-callout" .}}
       {{if .InfoMessage}}<p class="notice" role="status">{{.InfoMessage}}</p>{{end}}
+      {{if .RestartPrompt.Visible}}
+      <section class="card">
+        <div class="card-header">
+          <div class="card-title">
+            <h2>{{.RestartPrompt.Title}}</h2>
+            <p>{{.RestartPrompt.Message}}</p>
+          </div>
+        </div>
+        <div class="actions section-spacer">
+          <form method="post" action="/settings/restart">
+            <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+            <button type="submit">{{if .RestartPrompt.ActionLabel}}{{.RestartPrompt.ActionLabel}}{{else}}Restart now{{end}}</button>
+          </form>
+        </div>
+      </section>
+      {{end}}
 
       <section class="grid two">
         <article class="card">
@@ -92,8 +108,6 @@
             {{if .ControllerUpdate.LatestReleaseURL}}<a href="{{.ControllerUpdate.LatestReleaseURL}}" target="_blank" rel="noreferrer">Open release</a>.{{end}}
             {{if .ControllerUpdate.CurrentImage}} Current image: <span class="inline-code">{{.ControllerUpdate.CurrentImage}}</span>.{{end}}
           </p>
-          {{else}}
-          <p class="field-hint section-spacer">Use this card to check the current release, trigger an on-demand controller update, or restart CaddyTower after host-level config changes.</p>
           {{end}}
         </article>
       </section>
