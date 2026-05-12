@@ -38,6 +38,8 @@ The installer defaults to:
 - `ghcr.io/knopkem/caddytower:latest`
 - `/opt/caddytower`
 - a local SSH-tunnel bootstrap first, unless you choose the final public HTTPS URL
+- GitHub App setup **later in the app**, unless you explicitly opt into the
+  advanced installer-based GitHub flow
 
 It walks you through the important values instead of requiring a repo checkout
 or manual file edits up front.
@@ -80,7 +82,8 @@ After login, the dashboard walks you through four steps:
 1. **Welcome** — what CaddyTower does.
 2. **Domain** — set the root domain and origin hostname (or IP) in Settings.
    Cloudflare points your subdomains at this origin.
-3. **GitHub** — if you configured a GitHub App, install it and connect.
+3. **GitHub** — when you want repo imports, follow the GitHub setup guide in
+   Settings, restart if needed, then connect the GitHub App.
 4. **Deploy** — either:
    - **Import from GitHub** → pick a repo. CaddyTower detects the root
      `Dockerfile`, the first `EXPOSE` port, and an existing image-publishing
@@ -139,6 +142,10 @@ Configure the GitHub App with:
 
 Mount the App's private key into the container and point
 `CADDYTOWER_GITHUB_APP_PRIVATE_KEY_PATH` at it.
+
+Most installs should do this from the in-app **Settings → GitHub import** guide
+after the first login rather than during the initial VPS installer run. The
+installer still supports an explicit advanced path via `--enable-github`.
 
 For a step-by-step explanation of these values, the Settings page fields,
 Cloudflare setup, the GitHub App flow, backups, SMTP alerts, and common setup

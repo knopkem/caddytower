@@ -14,9 +14,10 @@ GITHUB_APP_SLUG="${CADDYTOWER_GITHUB_APP_SLUG:-}"
 GITHUB_WEBHOOK_SECRET="${CADDYTOWER_GITHUB_WEBHOOK_SECRET:-}"
 GITHUB_PEM_HOST_PATH="${CADDYTOWER_GITHUB_PEM_HOST_PATH:-}"
 GITHUB_PEM_CONTAINER_PATH="${CADDYTOWER_GITHUB_PEM_CONTAINER_PATH:-/run/secrets/github-app.pem}"
-ENABLE_GITHUB=""
+GITHUB_MODE="auto"
 NONINTERACTIVE=0
 REFRESH_ASSETS=0
+SUPPLIED_GITHUB_VALUES_PRESENT=0
 
 log() {
   printf '%s\n' "$*"
@@ -48,8 +49,8 @@ Options:
   --image <image-ref>             Controller image ref
   --public-base-url <url>         Public base URL for the admin UI
   --root-domain <domain>          Root domain for managed apps
-  --enable-github                 Configure GitHub App integration now
-  --disable-github                Skip GitHub App setup
+  --enable-github                 Configure GitHub App integration now (advanced)
+  --disable-github                Clear GitHub App env values from this install
   --github-app-id <id>            GitHub App ID
   --github-app-slug <slug>        GitHub App slug
   --github-webhook-secret <text>  GitHub webhook secret
@@ -93,31 +94,36 @@ while [[ $# -gt 0 ]]; do
       shift 2
       ;;
     --enable-github)
-      ENABLE_GITHUB="1"
+      GITHUB_MODE="enable"
       shift
       ;;
     --disable-github)
-      ENABLE_GITHUB="0"
+      GITHUB_MODE="disable"
       shift
       ;;
     --github-app-id)
       GITHUB_APP_ID="${2:-}"
+      SUPPLIED_GITHUB_VALUES_PRESENT=1
       shift 2
       ;;
     --github-app-slug)
       GITHUB_APP_SLUG="${2:-}"
+      SUPPLIED_GITHUB_VALUES_PRESENT=1
       shift 2
       ;;
     --github-webhook-secret)
       GITHUB_WEBHOOK_SECRET="${2:-}"
+      SUPPLIED_GITHUB_VALUES_PRESENT=1
       shift 2
       ;;
     --github-pem-host-path)
       GITHUB_PEM_HOST_PATH="${2:-}"
+      SUPPLIED_GITHUB_VALUES_PRESENT=1
       shift 2
       ;;
     --github-pem-container-path)
       GITHUB_PEM_CONTAINER_PATH="${2:-}"
+      SUPPLIED_GITHUB_VALUES_PRESENT=1
       shift 2
       ;;
     --refresh-assets)
@@ -139,6 +145,13 @@ while [[ $# -gt 0 ]]; do
 done
 
 require_command curl
+
+if [[ -n "${GITHUB_APP_ID}${GITHUB_APP_SLUG}${GITHUB_WEBHOOK_SECRET}${GITHUB_PEM_HOST_PATH}" ]]; then
+  SUPPLIED_GITHUB_VALUES_PRESENT=1
+fi
+if [[ "${GITHUB_MODE}" == "auto" && "${SUPPLIED_GITHUB_VALUES_PRESENT}" -eq 1 ]]; then
+  GITHUB_MODE="enable"
+fi
 
 resolve_latest_release_ref() {
   local api_url="https://api.github.com/repos/${INSTALL_OWNER}/${INSTALL_REPO}/releases/latest"
@@ -191,6 +204,15 @@ default_image_ref() {
   printf 'ghcr.io/%s/caddytower:latest' "${INSTALL_OWNER}"
 }
 
+normalize_image_ref() {
+  local value="${1:-}"
+  if [[ -z "${value}" || "${value}" == *REPLACE_WITH_OWNER* ]]; then
+    default_image_ref
+    return 0
+  fi
+  printf '%s' "${value}"
+}
+
 random_secret() {
   head -c 32 /dev/urandom | base64 | tr -d '\n'
 }
@@ -205,6 +227,15 @@ require_https_url() {
   local label="${1:-url}"
   local value="${2:-}"
   [[ "${value}" == https://* ]] || die "${label} must start with https://"
+}
+
+suggested_public_base_url() {
+  local root_domain="${1:-}"
+  if [[ -n "${root_domain}" ]]; then
+    printf 'https://caddytower.%s' "${root_domain}"
+    return 0
+  fi
+  printf 'https://caddytower.example.com'
 }
 
 download_asset() {
@@ -229,12 +260,34 @@ if [[ -f "${ENV_DEST}" ]]; then
   existing_env="${ENV_DEST}"
 fi
 
+existing_github_values_present=0
+if [[ -n "${existing_env}" ]]; then
+  if [[ -z "${GITHUB_APP_ID}" ]]; then
+    GITHUB_APP_ID="$(caddytower_get_env_value "${existing_env}" "CADDYTOWER_GITHUB_APP_ID")"
+  fi
+  if [[ -z "${GITHUB_APP_SLUG}" ]]; then
+    GITHUB_APP_SLUG="$(caddytower_get_env_value "${existing_env}" "CADDYTOWER_GITHUB_APP_SLUG")"
+  fi
+  if [[ -z "${GITHUB_WEBHOOK_SECRET}" ]]; then
+    GITHUB_WEBHOOK_SECRET="$(caddytower_get_env_value "${existing_env}" "CADDYTOWER_GITHUB_WEBHOOK_SECRET")"
+  fi
+  existing_pem_container_path="$(caddytower_get_env_value "${existing_env}" "CADDYTOWER_GITHUB_APP_PRIVATE_KEY_PATH")"
+  if [[ -z "${GITHUB_PEM_CONTAINER_PATH}" || "${GITHUB_PEM_CONTAINER_PATH}" == "/run/secrets/github-app.pem" ]]; then
+    if [[ -n "${existing_pem_container_path}" ]]; then
+      GITHUB_PEM_CONTAINER_PATH="${existing_pem_container_path}"
+    fi
+  fi
+  if [[ -n "${GITHUB_APP_ID}${GITHUB_APP_SLUG}${existing_pem_container_path}${GITHUB_WEBHOOK_SECRET}" ]]; then
+    existing_github_values_present=1
+  fi
+fi
+
 if [[ -z "${IMAGE_REF}" ]]; then
   if [[ -n "${existing_env}" ]]; then
     IMAGE_REF="$(caddytower_get_env_value "${existing_env}" "CADDYTOWER_IMAGE")"
   fi
-  IMAGE_REF="${IMAGE_REF:-$(default_image_ref)}"
 fi
+IMAGE_REF="$(normalize_image_ref "${IMAGE_REF}")"
 
 if [[ -z "${PUBLIC_BASE_URL}" && -n "${existing_env}" ]]; then
   PUBLIC_BASE_URL="$(caddytower_get_env_value "${existing_env}" "CADDYTOWER_PUBLIC_BASE_URL")"
@@ -245,12 +298,9 @@ if [[ -z "${ROOT_DOMAIN}" && -n "${existing_env}" ]]; then
   ROOT_DOMAIN="$(caddytower_get_env_value "${existing_env}" "CADDYTOWER_ROOT_DOMAIN")"
 fi
 
-if [[ -z "${ENABLE_GITHUB}" ]]; then
-  if [[ -n "${GITHUB_APP_ID}${GITHUB_APP_SLUG}${GITHUB_WEBHOOK_SECRET}${GITHUB_PEM_HOST_PATH}" ]]; then
-    ENABLE_GITHUB="1"
-  else
-    ENABLE_GITHUB="0"
-  fi
+ENABLE_GITHUB="0"
+if [[ "${GITHUB_MODE}" == "enable" || "${GITHUB_MODE}" == "auto" && "${existing_github_values_present}" -eq 1 ]]; then
+  ENABLE_GITHUB="1"
 fi
 
 if [[ "${NONINTERACTIVE}" -eq 0 ]]; then
@@ -261,14 +311,21 @@ if [[ "${NONINTERACTIVE}" -eq 0 ]]; then
   caddytower_log
 
   TARGET_DIR="$(caddytower_prompt "Target directory" "${TARGET_DIR}")"
-  IMAGE_REF="$(caddytower_prompt "CaddyTower controller image" "${IMAGE_REF}")"
+  IMAGE_REF="$(normalize_image_ref "$(caddytower_prompt "CaddyTower controller image" "${IMAGE_REF}")")"
+
+  while [[ -z "${ROOT_DOMAIN}" ]]; do
+    ROOT_DOMAIN="$(caddytower_prompt "Root domain for managed apps" "${ROOT_DOMAIN:-example.com}")"
+    if [[ -z "${ROOT_DOMAIN}" ]]; then
+      caddytower_warn "Root domain is required for a guided install."
+    fi
+  done
 
   if [[ "${PUBLIC_BASE_URL}" == "http://127.0.0.1:8080" || "${PUBLIC_BASE_URL}" == "http://localhost:8080" ]]; then
     if caddytower_confirm "Use local SSH-tunnel bootstrap first?" "y"; then
       PUBLIC_BASE_URL="http://127.0.0.1:8080"
     else
       while true; do
-        PUBLIC_BASE_URL="$(caddytower_prompt "Final public HTTPS admin URL" "https://tower.example.com")"
+        PUBLIC_BASE_URL="$(caddytower_prompt "Final public HTTPS admin URL" "$(suggested_public_base_url "${ROOT_DOMAIN}")")"
         if [[ "${PUBLIC_BASE_URL}" == https://* ]]; then
           break
         fi
@@ -279,23 +336,12 @@ if [[ "${NONINTERACTIVE}" -eq 0 ]]; then
     PUBLIC_BASE_URL="$(caddytower_prompt "Public base URL" "${PUBLIC_BASE_URL}")"
   fi
 
-  while [[ -z "${ROOT_DOMAIN}" ]]; do
-    ROOT_DOMAIN="$(caddytower_prompt "Root domain for managed apps" "${ROOT_DOMAIN:-example.com}")"
-    if [[ -z "${ROOT_DOMAIN}" ]]; then
-      caddytower_warn "Root domain is required for a guided install."
-    fi
-  done
-
-  github_default="n"
-  if [[ "${ENABLE_GITHUB}" == "1" ]]; then
-    github_default="y"
-  fi
-  if caddytower_confirm "Configure GitHub App import during install?" "${github_default}"; then
+  if [[ "${GITHUB_MODE}" == "enable" ]]; then
     ENABLE_GITHUB="1"
     if [[ "${PUBLIC_BASE_URL}" == "http://127.0.0.1:8080" || "${PUBLIC_BASE_URL}" == "http://localhost:8080" ]]; then
       caddytower_warn "GitHub webhooks need the final public HTTPS admin URL."
       while true; do
-        PUBLIC_BASE_URL="$(caddytower_prompt "Final public HTTPS admin URL" "https://tower.example.com")"
+        PUBLIC_BASE_URL="$(caddytower_prompt "Final public HTTPS admin URL" "$(suggested_public_base_url "${ROOT_DOMAIN}")")"
         if [[ "${PUBLIC_BASE_URL}" == https://* ]]; then
           break
         fi
@@ -323,8 +369,6 @@ if [[ "${NONINTERACTIVE}" -eq 0 ]]; then
         break
       fi
     done
-  else
-    ENABLE_GITHUB="0"
   fi
 
   if [[ "${ENABLE_GITHUB}" == "1" ]]; then
@@ -339,7 +383,7 @@ Summary
   Controller image: ${IMAGE_REF}
   Public base URL:  ${PUBLIC_BASE_URL}
   Root domain:      ${ROOT_DOMAIN}
-  GitHub import:    $( [[ "${ENABLE_GITHUB}" == "1" ]] && printf 'enabled' || printf 'disabled' )
+  GitHub import:    $( [[ "${ENABLE_GITHUB}" == "1" ]] && printf 'enabled/preserved' || printf 'configure later in Settings' )
 EOF
   if [[ "${ENABLE_GITHUB}" == "1" ]]; then
     cat >/dev/tty <<EOF
@@ -357,7 +401,7 @@ else
   if [[ "${PUBLIC_BASE_URL}" != "http://127.0.0.1:8080" && "${PUBLIC_BASE_URL}" != "http://localhost:8080" ]]; then
     require_https_url "CADDYTOWER_PUBLIC_BASE_URL" "${PUBLIC_BASE_URL}"
   fi
-  if [[ "${ENABLE_GITHUB}" == "1" ]]; then
+  if [[ "${GITHUB_MODE}" == "enable" ]]; then
     require_non_empty "CADDYTOWER_GITHUB_APP_ID" "${GITHUB_APP_ID}"
     require_non_empty "CADDYTOWER_GITHUB_APP_SLUG" "${GITHUB_APP_SLUG}"
     require_non_empty "CADDYTOWER_GITHUB_WEBHOOK_SECRET" "${GITHUB_WEBHOOK_SECRET}"
@@ -370,6 +414,7 @@ fi
 ENV_DEST="${TARGET_DIR}/caddytower.env"
 COMPOSE_DEST="${TARGET_DIR}/docker-compose.yml"
 CADDYFILE_DEST="${TARGET_DIR}/Caddyfile"
+IMAGE_REF="$(normalize_image_ref "${IMAGE_REF}")"
 
 caddytower_require_docker
 mkdir -p "${TARGET_DIR}"
@@ -384,14 +429,14 @@ caddytower_set_env_value "${ENV_DEST}" "CADDYTOWER_PUBLIC_BASE_URL" "${PUBLIC_BA
 caddytower_set_env_value "${ENV_DEST}" "CADDYTOWER_ROOT_DOMAIN" "${ROOT_DOMAIN}"
 caddytower_generate_master_key_if_needed "${ENV_DEST}"
 
-if [[ "${ENABLE_GITHUB}" == "1" ]]; then
+if [[ "${GITHUB_MODE}" == "enable" ]]; then
   caddytower_set_env_value "${ENV_DEST}" "CADDYTOWER_GITHUB_APP_ID" "${GITHUB_APP_ID}"
   caddytower_set_env_value "${ENV_DEST}" "CADDYTOWER_GITHUB_APP_SLUG" "${GITHUB_APP_SLUG}"
   caddytower_set_env_value "${ENV_DEST}" "CADDYTOWER_GITHUB_APP_PRIVATE_KEY_PATH" "${GITHUB_PEM_CONTAINER_PATH}"
   caddytower_set_env_value "${ENV_DEST}" "CADDYTOWER_GITHUB_WEBHOOK_SECRET" "${GITHUB_WEBHOOK_SECRET}"
   caddytower_configure_github_pem_mount "${COMPOSE_DEST}" "${GITHUB_PEM_HOST_PATH}" "${GITHUB_PEM_CONTAINER_PATH}" ||
     die "failed to add the GitHub App PEM mount to ${COMPOSE_DEST}"
-else
+elif [[ "${GITHUB_MODE}" == "disable" ]]; then
   caddytower_set_env_value "${ENV_DEST}" "CADDYTOWER_GITHUB_APP_ID" ""
   caddytower_set_env_value "${ENV_DEST}" "CADDYTOWER_GITHUB_APP_SLUG" ""
   caddytower_set_env_value "${ENV_DEST}" "CADDYTOWER_GITHUB_APP_PRIVATE_KEY_PATH" ""
@@ -401,7 +446,7 @@ fi
 caddytower_compose_up "${TARGET_DIR}"
 caddytower_print_access_summary "${PUBLIC_BASE_URL}"
 
-if [[ "${ENABLE_GITHUB}" == "1" ]]; then
+if [[ "${GITHUB_MODE}" == "enable" ]]; then
   cat <<EOF
 GitHub App follow-up
   Homepage URL: ${PUBLIC_BASE_URL}
@@ -411,6 +456,23 @@ GitHub App follow-up
 
 After the stack is up, open Settings, click "Connect on GitHub", install the app,
 then refresh the page after GitHub delivers the installation webhook.
+
+EOF
+elif [[ "${ENABLE_GITHUB}" == "1" ]]; then
+  cat <<EOF
+Existing GitHub App configuration was preserved.
+
+After first login, open Settings to review the GitHub connection status and
+finish any remaining GitHub App installation steps there.
+
+EOF
+else
+  cat <<EOF
+GitHub import was left for later.
+
+After first login, open Settings and follow the GitHub setup guide there when
+you want repo-based imports. The default install path keeps the first-run setup
+focused on getting CaddyTower online.
 
 EOF
 fi

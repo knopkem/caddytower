@@ -61,7 +61,8 @@
             <details class="help">
               <summary>Help</summary>
               <div class="help-body">
-                <p>Install the GitHub App once, then CaddyTower can list repos, inspect Docker metadata, and create pull requests for the deploy workflow.</p>
+                <p>Most installs should do GitHub setup here after the first login, not during the VPS installer.</p>
+                <p>Once the host-level GitHub App wiring is in place, CaddyTower can list repos, inspect Docker metadata, and create pull requests for the deploy workflow.</p>
               </div>
             </details>
           </div>
@@ -104,8 +105,30 @@
           {{else}}
           <div class="empty-state">
             <p><strong>GitHub App not configured on this CaddyTower install.</strong></p>
-            <p>Set the GitHub App ID, slug, private key path, and webhook secret in the environment before enabling repo import.</p>
+            <p>Most installs should do this after the first login. Keep the VPS bootstrap simple, then come back here when you want GitHub-based imports.</p>
           </div>
+          <div class="hint-list section-spacer">
+            {{if or (eq .Config.PublicBaseURL "http://127.0.0.1:8080") (eq .Config.PublicBaseURL "http://localhost:8080")}}
+            <p><strong>1. Switch CaddyTower to its final public HTTPS URL first.</strong> GitHub cannot send webhooks to a localhost-only admin URL. Suggested URL: <span class="inline-code">{{if .Settings.RootDomain}}https://caddytower.{{.Settings.RootDomain}}{{else}}https://caddytower.example.com{{end}}</span>.</p>
+            {{else}}
+            <p><strong>1. Public admin URL is ready.</strong> GitHub can target <span class="inline-code">{{.Config.PublicBaseURL}}</span>.</p>
+            {{end}}
+            <p><strong>2. Create a GitHub App.</strong> In GitHub App settings, use <span class="inline-code">{{if or (eq .Config.PublicBaseURL "http://127.0.0.1:8080") (eq .Config.PublicBaseURL "http://localhost:8080")}}{{if .Settings.RootDomain}}https://caddytower.{{.Settings.RootDomain}}{{else}}https://caddytower.example.com{{end}}{{else}}{{.Config.PublicBaseURL}}{{end}}</span> as the homepage URL and <span class="inline-code">{{if or (eq .Config.PublicBaseURL "http://127.0.0.1:8080") (eq .Config.PublicBaseURL "http://localhost:8080")}}{{if .Settings.RootDomain}}https://caddytower.{{.Settings.RootDomain}}{{else}}https://caddytower.example.com{{end}}{{else}}{{.Config.PublicBaseURL}}{{end}}/api/webhooks/github</span> as the webhook URL.</p>
+            <p><strong>3. Give it the minimum permissions.</strong> Metadata: read. Contents: read and write. Pull requests: read and write. Subscribe to the <span class="inline-code">installation</span> and <span class="inline-code">installation_repositories</span> webhook events.</p>
+            <p><strong>4. Mount the PEM on the host.</strong> Put the downloaded private key somewhere like <span class="inline-code">/opt/caddytower/secrets/github-app.pem</span>, then mount it read-only into the container at <span class="inline-code">/run/secrets/github-app.pem</span>.</p>
+            <p><strong>5. Add the GitHub App values to</strong> <span class="inline-code">/opt/caddytower/caddytower.env</span>, restart with <span class="inline-code">docker compose up -d</span>, then return here and click <strong>Connect on GitHub</strong>.</p>
+          </div>
+          <article class="subcard section-spacer">
+            <h3>Values to add</h3>
+            <p class="mono">CADDYTOWER_GITHUB_APP_ID=&lt;your-app-id&gt;</p>
+            <p class="mono">CADDYTOWER_GITHUB_APP_SLUG=&lt;your-app-slug&gt;</p>
+            <p class="mono">CADDYTOWER_GITHUB_APP_PRIVATE_KEY_PATH=/run/secrets/github-app.pem</p>
+            <p class="mono">CADDYTOWER_GITHUB_WEBHOOK_SECRET=&lt;random-secret&gt;</p>
+          </article>
+          <article class="subcard section-spacer">
+            <h3>Compose mount</h3>
+            <p class="mono">- ./secrets/github-app.pem:/run/secrets/github-app.pem:ro</p>
+          </article>
           {{end}}
         </article>
 

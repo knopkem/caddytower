@@ -581,6 +581,79 @@ func TestSettingsPageShowsGitHubInstallationStatus(t *testing.T) {
 	}
 }
 
+func TestSettingsPageShowsGitHubSetupGuideWhenUnconfigured(t *testing.T) {
+	t.Parallel()
+
+	webUI, err := ui.New()
+	if err != nil {
+		t.Fatalf("ui.New() error = %v", err)
+	}
+
+	stateStore := openServerTestStore(t)
+	authService := auth.New(stateStore, nil, "http://localhost:8080")
+	fixedNow := time.Date(2026, 5, 12, 7, 0, 0, 0, time.UTC)
+	authService.SetNow(func() time.Time { return fixedNow })
+	enrollment, err := authService.GenerateEnrollment("admin@example.com")
+	if err != nil {
+		t.Fatalf("GenerateEnrollment() error = %v", err)
+	}
+	code, err := totp.GenerateCodeCustom(enrollment.Secret, fixedNow, totp.ValidateOpts{
+		Period:    30,
+		Skew:      1,
+		Digits:    otp.DigitsSix,
+		Algorithm: otp.AlgorithmSHA1,
+	})
+	if err != nil {
+		t.Fatalf("GenerateCodeCustom() error = %v", err)
+	}
+	token, _, err := authService.CreateInitialUser(context.Background(), "admin@example.com", "super-secure-password", "super-secure-password", enrollment.Secret, code, "127.0.0.1", "test-agent")
+	if err != nil {
+		t.Fatalf("CreateInitialUser() error = %v", err)
+	}
+
+	projectService := projects.New(config.Config{
+		HTTPAddr:      ":8080",
+		PublicBaseURL: "http://127.0.0.1:8080",
+		DataDir:       t.TempDir(),
+		CaddyAdminURL: "http://shared-caddy:2019",
+		RootDomain:    "example.com",
+	}, stateStore, nil, nil, nil, newNoopLogger())
+	if err := projectService.SaveSettings(context.Background(), projects.SettingsInput{RootDomain: "example.com"}, ""); err != nil {
+		t.Fatalf("SaveSettings() error = %v", err)
+	}
+
+	srv := New(config.Config{
+		HTTPAddr:      ":8080",
+		PublicBaseURL: "http://127.0.0.1:8080",
+		DataDir:       t.TempDir(),
+		CaddyAdminURL: "http://shared-caddy:2019",
+		RootDomain:    "example.com",
+	}, webUI, newNoopLogger(), version.Info{Version: "test"}, stateStore, authService, projectService, nil, nil)
+
+	req := httptest.NewRequest(http.MethodGet, "/settings", nil)
+	req.AddCookie(&http.Cookie{Name: authService.SessionCookieName(), Value: token})
+	rec := httptest.NewRecorder()
+
+	srv.Router().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+	body := rec.Body.String()
+	for _, snippet := range []string{
+		"Most installs should do this after the first login",
+		"https://caddytower.example.com",
+		"/api/webhooks/github",
+		"CADDYTOWER_GITHUB_APP_ID",
+		"./secrets/github-app.pem:/run/secrets/github-app.pem:ro",
+		"docker compose up -d",
+	} {
+		if !strings.Contains(body, snippet) {
+			t.Fatalf("settings page missing github setup guide snippet %q: %q", snippet, body)
+		}
+	}
+}
+
 func TestSettingsPageFiltersAuditLog(t *testing.T) {
 	t.Parallel()
 

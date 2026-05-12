@@ -82,7 +82,7 @@
               {{else if .GitHubConfigured}}
               Connect the GitHub App in Settings, then import repositories here.
               {{else}}
-              Configure the GitHub App to unlock the repo import flow.
+              Configure the GitHub App later in Settings when you want repo-based imports.
               {{end}}
             </p>
           </article>
@@ -135,7 +135,7 @@
                 {{else if .GitHubConfigured}}
                 Finish installing the GitHub App to unlock repo import.
                 {{else}}
-                Configure the GitHub App in Settings if you want the guided repo import flow.
+                Most installs do this later in Settings after the first login, once the admin URL is public.
                 {{end}}
               </p>
             </div>
@@ -295,7 +295,7 @@
               {{else if .GitHubConfigured}}
               Connect the GitHub App once, then CaddyTower can pick a repo, inspect its Docker setup, and guide the first deploy for you.
               {{else}}
-              If you want repo-based setup, configure the GitHub App in Settings first. Manual image deploys are still available right away.
+              If you want repo-based setup, configure the GitHub App later in Settings after the first login. Manual image deploys are still available right away.
               {{end}}
             </p>
             <div class="summary-grid section-spacer">

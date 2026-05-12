@@ -78,6 +78,7 @@ This installer:
 - copies `docker-compose.yml`, `Caddyfile`, and `caddytower.env`
 - generates `CADDYTOWER_MASTER_KEY` on first run
 - fills in the main setup values interactively
+- leaves GitHub App setup for later by default so first login is simpler
 - starts bundled `shared-caddy` and `watchtower` only when they are missing
 
 If you explicitly want the moving branch instead of the latest tagged release:
@@ -120,6 +121,10 @@ credentials, and API tokens at rest.
 Rerunning the installer is safe by default: it keeps existing install files
 unless you explicitly refresh them, and it updates the prompted environment
 values in place.
+
+GitHub App setup is intentionally deferred by default. After the first login,
+open **Settings** and follow the GitHub setup guide there when you actually want
+repo imports.
 
 ## 6. First login
 
@@ -171,6 +176,16 @@ DNS records in Cloudflare manually.
 ## 8. GitHub App setup for Import from GitHub
 
 This is optional. Skip it if you only want manual image deploys.
+
+The recommended path is:
+
+1. finish the first login
+2. make sure CaddyTower has its final public HTTPS admin URL
+3. open **Settings**
+4. follow the GitHub setup guide shown in the app
+
+The installer still supports an advanced opt-in path for GitHub setup if you
+explicitly pass `--enable-github`, but that is no longer the default experience.
 
 GitHub import only works when all four GitHub App environment variables are set
 together:
