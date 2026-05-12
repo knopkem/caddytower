@@ -3,12 +3,17 @@ package server
 import (
 	"context"
 	"crypto/hmac"
+	"crypto/rand"
+	"crypto/rsa"
 	"crypto/sha256"
+	"crypto/x509"
 	"encoding/json"
+	"encoding/pem"
 	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	neturl "net/url"
 	"strings"
 	"testing"
 	"time"
@@ -19,6 +24,7 @@ import (
 	"caddytower/internal/dockerx"
 	githubapp "caddytower/internal/github"
 	"caddytower/internal/projects"
+	"caddytower/internal/secrets"
 	"caddytower/internal/store"
 	"caddytower/internal/ui"
 	"caddytower/internal/version"
@@ -699,12 +705,11 @@ func TestSettingsPageShowsGitHubSetupGuideWhenUnconfigured(t *testing.T) {
 	}
 	body := rec.Body.String()
 	for _, snippet := range []string{
-		"Most installs should do this after the first login",
+		"Save GitHub App settings",
 		"https://caddytower.example.com",
 		"/api/webhooks/github",
-		"CADDYTOWER_GITHUB_APP_ID",
-		"./secrets/github-app.pem:/run/secrets/github-app.pem:ro",
-		"Restart CaddyTower",
+		"GitHub App private key PEM",
+		"Paste the GitHub App details here",
 		"CaddyTower still works without Cloudflare",
 		"Cloudflare zone ID (optional)",
 	} {
@@ -712,8 +717,123 @@ func TestSettingsPageShowsGitHubSetupGuideWhenUnconfigured(t *testing.T) {
 			t.Fatalf("settings page missing github setup guide snippet %q: %q", snippet, body)
 		}
 	}
+	for _, snippet := range []string{
+		"CADDYTOWER_GITHUB_APP_ID",
+		"/run/secrets/github-app.pem",
+		"/opt/caddytower/caddytower.env",
+	} {
+		if strings.Contains(body, snippet) {
+			t.Fatalf("settings page still contains stale env-based github setup snippet %q: %q", snippet, body)
+		}
+	}
 	if strings.Contains(body, "VPS status") {
 		t.Fatalf("settings page should no longer render vps status in the settings view: %q", body)
+	}
+}
+
+func TestSettingsGitHubSubmitEnablesRuntimeInstallFlow(t *testing.T) {
+	t.Parallel()
+
+	webUI, err := ui.New()
+	if err != nil {
+		t.Fatalf("ui.New() error = %v", err)
+	}
+
+	stateStore := openServerTestStore(t)
+	secretSvc, err := secrets.NewOptionalFromBase64("AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=")
+	if err != nil {
+		t.Fatalf("NewOptionalFromBase64() error = %v", err)
+	}
+	authService := auth.New(stateStore, nil, "https://caddytower.example.com")
+	fixedNow := time.Date(2026, 5, 12, 7, 0, 0, 0, time.UTC)
+	authService.SetNow(func() time.Time { return fixedNow })
+	enrollment, err := authService.GenerateEnrollment("admin@example.com")
+	if err != nil {
+		t.Fatalf("GenerateEnrollment() error = %v", err)
+	}
+	code, err := totp.GenerateCodeCustom(enrollment.Secret, fixedNow, totp.ValidateOpts{
+		Period:    30,
+		Skew:      1,
+		Digits:    otp.DigitsSix,
+		Algorithm: otp.AlgorithmSHA1,
+	})
+	if err != nil {
+		t.Fatalf("GenerateCodeCustom() error = %v", err)
+	}
+	token, _, err := authService.CreateInitialUser(context.Background(), "admin@example.com", "super-secure-password", "super-secure-password", enrollment.Secret, code, "127.0.0.1", "test-agent")
+	if err != nil {
+		t.Fatalf("CreateInitialUser() error = %v", err)
+	}
+
+	cfg := config.Config{
+		HTTPAddr:         ":8080",
+		PublicBaseURL:    "https://caddytower.example.com",
+		DataDir:          t.TempDir(),
+		CaddyAdminURL:    "http://shared-caddy:2019",
+		RootDomain:       "example.com",
+		GitHubAPIBaseURL: "https://api.github.test",
+		GitHubWebBaseURL: "https://github.test",
+	}
+	projectService := projects.New(cfg, stateStore, secretSvc, nil, nil, newNoopLogger())
+	srv := New(cfg, webUI, newNoopLogger(), version.Info{Version: "test"}, stateStore, authService, projectService, nil, nil)
+
+	getReq := httptest.NewRequest(http.MethodGet, "/settings", nil)
+	getReq.AddCookie(&http.Cookie{Name: authService.SessionCookieName(), Value: token})
+	getRec := httptest.NewRecorder()
+	srv.Router().ServeHTTP(getRec, getReq)
+	if getRec.Code != http.StatusOK {
+		t.Fatalf("settings page status = %d, want %d", getRec.Code, http.StatusOK)
+	}
+
+	var csrfCookie *http.Cookie
+	for _, cookie := range getRec.Result().Cookies() {
+		if cookie.Name != authService.SessionCookieName() {
+			csrfCookie = cookie
+			break
+		}
+	}
+	if csrfCookie == nil {
+		t.Fatal("missing csrf cookie")
+	}
+
+	privateKeyPEM := generatedTestPrivateKeyPEM(t)
+	formValues := neturl.Values{
+		"csrf_token":             {csrfCookie.Value},
+		"github_app_id":          {"12345"},
+		"github_app_slug":        {"caddytower"},
+		"github_webhook_secret":  {"github-secret"},
+		"github_private_key_pem": {privateKeyPEM},
+	}
+	form := strings.NewReader(formValues.Encode())
+	postReq := httptest.NewRequest(http.MethodPost, "/settings/github", form)
+	postReq.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	postReq.AddCookie(&http.Cookie{Name: authService.SessionCookieName(), Value: token})
+	postReq.AddCookie(csrfCookie)
+	postRec := httptest.NewRecorder()
+
+	srv.Router().ServeHTTP(postRec, postReq)
+
+	if postRec.Code != http.StatusFound {
+		t.Fatalf("status = %d, want %d", postRec.Code, http.StatusFound)
+	}
+	settings, err := projectService.GitHubSettings(context.Background())
+	if err != nil {
+		t.Fatalf("GitHubSettings() error = %v", err)
+	}
+	if !settings.StoredInApp || !settings.Configured || settings.AppSlug != "caddytower" {
+		t.Fatalf("unexpected runtime github settings %#v", settings)
+	}
+
+	installReq := httptest.NewRequest(http.MethodGet, "/github/install", nil)
+	installReq.AddCookie(&http.Cookie{Name: authService.SessionCookieName(), Value: token})
+	installRec := httptest.NewRecorder()
+	srv.Router().ServeHTTP(installRec, installReq)
+
+	if installRec.Code != http.StatusFound {
+		t.Fatalf("install status = %d, want %d", installRec.Code, http.StatusFound)
+	}
+	if location := installRec.Header().Get("Location"); location != "https://github.test/apps/caddytower/installations/new" {
+		t.Fatalf("install redirect = %q", location)
 	}
 }
 
@@ -996,6 +1116,19 @@ func openServerTestStore(t *testing.T) *store.Store {
 	})
 
 	return stateStore
+}
+
+func generatedTestPrivateKeyPEM(t *testing.T) string {
+	t.Helper()
+
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("GenerateKey() error = %v", err)
+	}
+	return string(pem.EncodeToMemory(&pem.Block{
+		Type:  "RSA PRIVATE KEY",
+		Bytes: x509.MarshalPKCS1PrivateKey(key),
+	}))
 }
 
 type serverTestDocker struct {

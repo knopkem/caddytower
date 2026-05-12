@@ -78,7 +78,7 @@
               <button type="submit" class="secondary">Restart CaddyTower</button>
             </form>
           </div>
-          <p class="field-hint section-spacer">Use this after changing env-backed options like GitHub App values, backup settings, or controller image configuration on the host.</p>
+          <p class="field-hint section-spacer">Use this after changing env-backed options like backup settings or controller image configuration on the host.</p>
         </article>
       </section>
 
@@ -93,10 +93,16 @@
               <summary>Help</summary>
               <div class="help-body">
                 <p>Most installs should do GitHub setup here after the first login, not during the VPS installer.</p>
-                <p>Once the host-level GitHub App wiring is in place, CaddyTower can list repos, inspect Docker metadata, and create pull requests for the deploy workflow.</p>
+                <p>CaddyTower stores the GitHub App credentials here, so you no longer need to edit the env file or mount the private key by hand for the normal setup path.</p>
               </div>
             </details>
           </div>
+          {{if not .PublicURLReady}}
+          <div class="empty-state">
+            <p><strong>Finish the public admin URL first.</strong></p>
+            <p>GitHub must reach <span class="inline-code">{{.EffectivePublicBaseURL}}</span>. Point <span class="inline-code">{{.PublicAdminHost}}</span> at your VPS, wait for HTTPS to work, then connect the GitHub App.</p>
+          </div>
+          {{end}}
           {{if .GitHub.Configured}}
           <dl class="stats">
             <div><dt>GitHub App</dt><dd>configured</dd></div>
@@ -136,31 +142,46 @@
           {{else}}
           <div class="empty-state">
             <p><strong>GitHub App not configured on this CaddyTower install.</strong></p>
-            <p>Most installs should do this after the first login. Keep the VPS bootstrap simple, then come back here when you want GitHub-based imports.</p>
+            <p>Set up the GitHub App here, then connect it on GitHub when you want repo-based imports.</p>
           </div>
           <div class="hint-list section-spacer">
-            {{if not .PublicURLReady}}
-            <p><strong>1. Make the admin hostname reachable first.</strong> GitHub needs a public HTTPS URL. Use <span class="inline-code">{{.EffectivePublicBaseURL}}</span>, and make sure <span class="inline-code">{{.PublicAdminHost}}</span> points at your VPS.</p>
-            {{else}}
-            <p><strong>1. Public admin URL is ready.</strong> GitHub can target <span class="inline-code">{{.EffectivePublicBaseURL}}</span>.</p>
-            {{end}}
-            <p><strong>2. Create a GitHub App.</strong> In GitHub App settings, use <span class="inline-code">{{.EffectivePublicBaseURL}}</span> as the homepage URL and <span class="inline-code">{{.EffectivePublicBaseURL}}/api/webhooks/github</span> as the webhook URL.</p>
-            <p><strong>3. Give it the minimum permissions.</strong> Metadata: read. Contents: read and write. Pull requests: read and write. Subscribe to the <span class="inline-code">installation</span> and <span class="inline-code">installation_repositories</span> webhook events.</p>
-            <p><strong>4. Mount the PEM on the host.</strong> Put the downloaded private key somewhere like <span class="inline-code">/opt/caddytower/secrets/github-app.pem</span>, then mount it read-only into the container at <span class="inline-code">/run/secrets/github-app.pem</span>.</p>
-            <p><strong>5. Add the GitHub App values to</strong> <span class="inline-code">/opt/caddytower/caddytower.env</span>, then use <strong>Restart CaddyTower</strong> above so the new env values are loaded before you click <strong>Connect on GitHub</strong>.</p>
+            <p><strong>1. Create a GitHub App.</strong> Use <span class="inline-code">{{.EffectivePublicBaseURL}}</span> as the homepage URL and <span class="inline-code">{{.EffectivePublicBaseURL}}/api/webhooks/github</span> as the webhook URL.</p>
+            <p><strong>2. Give it the minimum permissions.</strong> Metadata: read. Contents: read and write. Pull requests: read and write. Subscribe to the <span class="inline-code">installation</span> and <span class="inline-code">installation_repositories</span> webhook events.</p>
+            <p><strong>3. Download the private key from GitHub.</strong> Paste that PEM into the form below. CaddyTower stores it encrypted at rest.</p>
+            <p><strong>4. Save the form, then click Connect on GitHub.</strong> After the installation webhook arrives, the repo import flow becomes available.</p>
           </div>
-          <article class="subcard section-spacer">
-            <h3>Values to add</h3>
-            <p class="mono">CADDYTOWER_GITHUB_APP_ID=&lt;your-app-id&gt;</p>
-            <p class="mono">CADDYTOWER_GITHUB_APP_SLUG=&lt;your-app-slug&gt;</p>
-            <p class="mono">CADDYTOWER_GITHUB_APP_PRIVATE_KEY_PATH=/run/secrets/github-app.pem</p>
-            <p class="mono">CADDYTOWER_GITHUB_WEBHOOK_SECRET=&lt;random-secret&gt;</p>
-          </article>
-          <article class="subcard section-spacer">
-            <h3>Compose mount</h3>
-            <p class="mono">- ./secrets/github-app.pem:/run/secrets/github-app.pem:ro</p>
-          </article>
           {{end}}
+          <article class="subcard section-spacer">
+            <h3>{{if .GitHub.Configured}}Update GitHub App settings{{else}}Save GitHub App settings{{end}}</h3>
+            <p>{{if .GitHub.StoredInApp}}These values are already managed inside CaddyTower. Leave the secret or private key blank to keep the current one.{{else}}Paste the GitHub App details here so CaddyTower can manage imports and installation webhooks itself.{{end}}</p>
+            <form method="post" action="/settings/github" class="stack section-spacer">
+              <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+              <div class="grid two">
+                <label class="field">
+                  <span>GitHub App ID</span>
+                  <input type="number" name="github_app_id" min="1" value="{{.GitHub.AppID}}" placeholder="123456">
+                </label>
+                <label class="field">
+                  <span>GitHub App slug</span>
+                  <input type="text" name="github_app_slug" value="{{.GitHub.AppSlug}}" placeholder="caddytower">
+                </label>
+              </div>
+              <label class="field">
+                <span>Webhook secret</span>
+                <input type="text" name="github_webhook_secret" value="{{.GitHub.WebhookSecret}}" placeholder="{{if .GitHub.WebhookSecretPresent}}Configured - leave blank to keep{{else}}Paste the same secret you set in GitHub{{end}}">
+                <small class="field-hint">GitHub must use the same webhook secret for <span class="inline-code">{{.EffectivePublicBaseURL}}/api/webhooks/github</span>.</small>
+              </label>
+              <label class="field">
+                <span>GitHub App private key PEM</span>
+                <textarea name="github_private_key_pem" rows="10" placeholder="{{if .GitHub.PrivateKeyPresent}}Configured - paste a new PEM only when rotating the key{{else}}-----BEGIN PRIVATE KEY-----{{end}}"></textarea>
+                <small class="field-hint">Paste the PEM you download from the GitHub App settings page. CaddyTower encrypts it before storing it in SQLite.</small>
+              </label>
+              <div class="actions">
+                <button type="submit">{{if .GitHub.Configured}}Save GitHub App settings{{else}}Save and continue{{end}}</button>
+                {{if .GitHub.Configured}}<a class="button-link secondary" href="/github/install">Connect on GitHub</a>{{end}}
+              </div>
+            </form>
+          </article>
         </article>
       </section>
 

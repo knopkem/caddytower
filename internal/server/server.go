@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/hmac"
+	cryptorand "crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
@@ -97,7 +98,7 @@ func (s *Server) Router() http.Handler {
 	if s.projects != nil {
 		router.Post("/api/webhooks/deploy/{slug}", s.handleDeployWebhook)
 	}
-	if s.github != nil {
+	if s.github != nil || s.projects != nil {
 		router.Post("/api/webhooks/github", s.handleGitHubWebhook)
 	}
 
@@ -109,18 +110,17 @@ func (s *Server) Router() http.Handler {
 		router.Post("/login", s.handleLoginSubmit)
 		router.Post("/logout", s.handleLogout)
 		router.Get("/api/image-check", s.handleImageCheck)
-		if s.github != nil {
+		if s.github != nil || s.projects != nil {
 			router.Get("/github/install", s.handleGitHubInstall)
 			router.Post("/github/installations/{installationID}/disconnect", s.handleGitHubDisconnect)
 		}
 		if s.projects != nil {
 			router.Get("/settings", s.handleSettingsPage)
 			router.Post("/settings", s.handleSettingsSubmit)
+			router.Post("/settings/github", s.handleSettingsGitHubSubmit)
 			router.Post("/settings/restart", s.handleSettingsRestart)
-			if s.github != nil {
-				router.Get("/projects/import", s.handleImportPage)
-				router.Post("/projects/import", s.handleImportCreate)
-			}
+			router.Get("/projects/import", s.handleImportPage)
+			router.Post("/projects/import", s.handleImportCreate)
 			router.Post("/projects", s.handleProjectCreate)
 			router.Get("/projects/{projectID}", s.handleProjectPage)
 			router.Get("/projects/{projectID}/logs/stream", s.handleProjectLogsStream)
@@ -247,7 +247,7 @@ func (s *Server) renderDashboard(w http.ResponseWriter, r *http.Request, current
 		PublicAdminHost:           projects.HostFromURL(effectivePublicBaseURL),
 		SuggestedPublicBaseURL:    suggestedPublicBaseURL,
 		NeedsSetup:                commonData.settings.RootDomain == "" || commonData.settings.OriginHostname == "" || !publicURLReady || len(commonData.projects) == 0,
-		GitHubConfigured:          s.github != nil && s.github.Configured(),
+		GitHubConfigured:          gitHubStatus.Configured,
 		GitHubConnected:           len(gitHubStatus.Installations) > 0,
 	}
 
@@ -571,11 +571,12 @@ func (s *Server) handleGitHubInstall(w http.ResponseWriter, r *http.Request) {
 	if _, ok := s.requireAuthenticated(w, r); !ok {
 		return
 	}
-	if s.github == nil || !s.github.Configured() {
+	githubService := s.runtimeGitHubService(r.Context())
+	if githubService == nil || !githubService.Configured() {
 		http.Redirect(w, r, "/settings?info=GitHub+App+is+not+configured", http.StatusFound)
 		return
 	}
-	http.Redirect(w, r, s.github.InstallURL(), http.StatusFound)
+	http.Redirect(w, r, githubService.InstallURL(), http.StatusFound)
 }
 
 func (s *Server) handleGitHubDisconnect(w http.ResponseWriter, r *http.Request) {
@@ -592,7 +593,12 @@ func (s *Server) handleGitHubDisconnect(w http.ResponseWriter, r *http.Request) 
 		http.Error(w, "invalid installation id", http.StatusBadRequest)
 		return
 	}
-	if err := s.github.DisconnectInstallation(r.Context(), installationID); err != nil {
+	githubService := s.runtimeGitHubService(r.Context())
+	if githubService == nil || !githubService.Configured() {
+		http.Redirect(w, r, "/settings?info=GitHub+App+is+not+configured", http.StatusFound)
+		return
+	}
+	if err := githubService.DisconnectInstallation(r.Context(), installationID); err != nil {
 		s.renderSettingsPage(w, r, user.Email, err.Error(), "")
 		return
 	}
@@ -622,6 +628,36 @@ func (s *Server) handleSettingsSubmit(w http.ResponseWriter, r *http.Request) {
 	}
 
 	http.Redirect(w, r, "/settings?info=Settings+saved", http.StatusFound)
+}
+
+func (s *Server) handleSettingsGitHubSubmit(w http.ResponseWriter, r *http.Request) {
+	user, ok := s.requireAuthenticated(w, r)
+	if !ok {
+		return
+	}
+	if !s.auth.ValidateCSRF(r) {
+		http.Error(w, "invalid csrf token", http.StatusForbidden)
+		return
+	}
+
+	appID, err := strconv.ParseInt(strings.TrimSpace(r.FormValue("github_app_id")), 10, 64)
+	if err != nil {
+		s.renderSettingsPage(w, r, user.Email, "github app id must be a number", "")
+		return
+	}
+
+	err = s.projects.SaveGitHubSettings(r.Context(), projects.GitHubSettingsInput{
+		AppID:         appID,
+		AppSlug:       r.FormValue("github_app_slug"),
+		WebhookSecret: r.FormValue("github_webhook_secret"),
+		PrivateKeyPEM: r.FormValue("github_private_key_pem"),
+	}, user.ID)
+	if err != nil {
+		s.renderSettingsPage(w, r, user.Email, err.Error(), "")
+		return
+	}
+
+	http.Redirect(w, r, "/settings?info="+neturl.QueryEscape("GitHub App settings saved. Connect the app on GitHub when the admin URL is reachable."), http.StatusFound)
 }
 
 func (s *Server) handleSettingsRestart(w http.ResponseWriter, r *http.Request) {
@@ -1152,7 +1188,8 @@ func (s *Server) handleDeployWebhook(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleGitHubWebhook(w http.ResponseWriter, r *http.Request) {
-	if s.github == nil {
+	githubService := s.runtimeGitHubService(r.Context())
+	if githubService == nil || !githubService.Configured() {
 		http.NotFound(w, r)
 		return
 	}
@@ -1162,7 +1199,7 @@ func (s *Server) handleGitHubWebhook(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "failed to read request body", http.StatusBadRequest)
 		return
 	}
-	result, err := s.github.HandleWebhook(r.Context(), r.Header.Get("X-GitHub-Event"), r.Header.Get("X-Hub-Signature-256"), payload)
+	result, err := githubService.HandleWebhook(r.Context(), r.Header.Get("X-GitHub-Event"), r.Header.Get("X-Hub-Signature-256"), payload)
 	if err != nil {
 		if strings.Contains(err.Error(), "invalid github webhook signature") {
 			http.Error(w, "invalid signature", http.StatusUnauthorized)
@@ -1474,19 +1511,37 @@ func (s *Server) renderSettingsPage(w http.ResponseWriter, r *http.Request, curr
 }
 
 func (s *Server) gitHubStatusData(ctx context.Context) ui.GitHubStatusData {
-	if s.github == nil {
-		return ui.GitHubStatusData{}
+	data := ui.GitHubStatusData{}
+	if s.projects != nil {
+		settings, err := s.projects.GitHubSettings(ctx)
+		if err != nil {
+			s.logger.Warn("load github settings", "error", err)
+		} else {
+			if settings.AppID > 0 {
+				data.AppID = strconv.FormatInt(settings.AppID, 10)
+			}
+			data.AppSlug = settings.AppSlug
+			data.WebhookSecretPresent = settings.WebhookSecretPresent
+			data.PrivateKeyPresent = settings.PrivateKeyPresent
+			data.StoredInApp = settings.StoredInApp
+			if !settings.WebhookSecretPresent {
+				data.WebhookSecret = suggestedGitHubWebhookSecret()
+			}
+		}
 	}
-	status, err := s.github.Status(ctx)
+	githubService := s.runtimeGitHubService(ctx)
+	if githubService == nil {
+		return data
+	}
+	status, err := githubService.Status(ctx)
 	if err != nil {
 		s.logger.Warn("load github status", "error", err)
-		return ui.GitHubStatusData{Configured: s.github.Configured()}
+		data.Configured = githubService.Configured()
+		return data
 	}
-	data := ui.GitHubStatusData{
-		Configured: status.Configured,
-		Connected:  len(status.Installations) > 0,
-		InstallURL: status.InstallURL,
-	}
+	data.Configured = status.Configured
+	data.Connected = len(status.Installations) > 0
+	data.InstallURL = status.InstallURL
 	for _, installation := range status.Installations {
 		data.Installations = append(data.Installations, ui.GitHubInstallationItem{
 			InstallationID: installation.InstallationID,
@@ -1497,6 +1552,39 @@ func (s *Server) gitHubStatusData(ctx context.Context) ui.GitHubStatusData {
 		})
 	}
 	return data
+}
+
+func (s *Server) runtimeGitHubService(ctx context.Context) *githubapp.Service {
+	if s.projects != nil {
+		githubService, err := s.projects.GitHubService(ctx)
+		if err != nil {
+			s.logger.Warn("build github service", "error", err)
+		} else if githubService != nil && (githubService.Configured() || s.github == nil) {
+			return githubService
+		}
+	}
+	return s.github
+}
+
+func (s *Server) runtimePublicBaseURL(ctx context.Context) string {
+	rootDomain := strings.TrimSpace(s.cfg.RootDomain)
+	if s.projects != nil {
+		settings, err := s.projects.Settings(ctx)
+		if err != nil {
+			s.logger.Warn("load deployment settings", "error", err)
+		} else {
+			rootDomain = effectiveRootDomain(settings.RootDomain, s.cfg.RootDomain)
+		}
+	}
+	return effectivePublicBaseURL(s.cfg.PublicBaseURL, rootDomain)
+}
+
+func suggestedGitHubWebhookSecret() string {
+	buf := make([]byte, 24)
+	if _, err := cryptorand.Read(buf); err != nil {
+		return ""
+	}
+	return base64.RawURLEncoding.EncodeToString(buf)
 }
 
 func (s *Server) renderProjectWithFallback(w http.ResponseWriter, r *http.Request, currentUser, projectID string, form ui.ProjectFormData, errorMessage, infoMessage string) {

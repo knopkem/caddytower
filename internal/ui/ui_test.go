@@ -110,6 +110,12 @@ func TestRenderSettings(t *testing.T) {
 	if !strings.Contains(body, "Optional: automatic DNS updates with Cloudflare") || !strings.Contains(body, "CaddyTower still works without Cloudflare") {
 		t.Fatalf("rendered settings missing optional cloudflare guidance: %q", body)
 	}
+	if !strings.Contains(body, "Save GitHub App settings") || !strings.Contains(body, "GitHub App private key PEM") {
+		t.Fatalf("rendered settings missing app-managed github form: %q", body)
+	}
+	if strings.Contains(body, "CADDYTOWER_GITHUB_APP_ID") || strings.Contains(body, "/run/secrets/github-app.pem") {
+		t.Fatalf("rendered settings should not include legacy env-based github guidance: %q", body)
+	}
 	if strings.Contains(body, "VPS status") {
 		t.Fatalf("rendered settings should not include vps status card anymore: %q", body)
 	}

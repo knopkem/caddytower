@@ -2,6 +2,10 @@ package projects
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/x509"
+	"encoding/pem"
 	"errors"
 	"io"
 	"log/slog"
@@ -133,6 +137,54 @@ func TestSaveSettingsReconcilesAdminRouteAndDNS(t *testing.T) {
 	}
 	if cloudflareFactory.client.upsertCount != 1 {
 		t.Fatalf("upsertCount = %d", cloudflareFactory.client.upsertCount)
+	}
+}
+
+func TestSaveGitHubSettingsPersistsEncryptedRuntimeConfig(t *testing.T) {
+	t.Parallel()
+
+	stateStore := openProjectsStore(t)
+	secretSvc, err := secrets.NewOptionalFromBase64("AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=")
+	if err != nil {
+		t.Fatalf("NewOptionalFromBase64() error = %v", err)
+	}
+
+	svc := New(config.Config{
+		GitHubAPIBaseURL: "https://api.github.test",
+		GitHubWebBaseURL: "https://github.test",
+	}, stateStore, secretSvc, nil, nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
+
+	if err := svc.SaveGitHubSettings(context.Background(), GitHubSettingsInput{
+		AppID:         12345,
+		AppSlug:       "caddytower",
+		WebhookSecret: "github-secret",
+		PrivateKeyPEM: generatedProjectsTestPrivateKeyPEM(t),
+	}, ""); err != nil {
+		t.Fatalf("SaveGitHubSettings() error = %v", err)
+	}
+
+	settings, err := svc.GitHubSettings(context.Background())
+	if err != nil {
+		t.Fatalf("GitHubSettings() error = %v", err)
+	}
+	if !settings.StoredInApp || !settings.Configured || settings.AppID != 12345 || settings.AppSlug != "caddytower" || settings.WebhookSecret != "github-secret" || settings.PrivateKeyPEM == "" {
+		t.Fatalf("unexpected github settings %#v", settings)
+	}
+
+	raw, err := stateStore.GetSettings(context.Background(), settingGitHubWebhook, settingGitHubPrivateKey)
+	if err != nil {
+		t.Fatalf("GetSettings() error = %v", err)
+	}
+	if !strings.HasPrefix(raw[settingGitHubWebhook], "enc:") || !strings.HasPrefix(raw[settingGitHubPrivateKey], "enc:") {
+		t.Fatalf("github settings should be encrypted at rest: %#v", raw)
+	}
+
+	githubService, err := svc.GitHubService(context.Background())
+	if err != nil {
+		t.Fatalf("GitHubService() error = %v", err)
+	}
+	if !githubService.Configured() {
+		t.Fatal("expected runtime github service to be configured")
 	}
 }
 
@@ -633,6 +685,7 @@ func (f *fakeDocker) Exec(context.Context, string, []string, []string, io.Writer
 type fakeCaddy struct {
 	managedHosts []string
 }
+
 func (f *fakeCaddy) ReconcileManagedRoutes(_ context.Context, routes []caddyadmin.HTTPRoute, managedHosts []string) (bool, error) {
 	f.managedHosts = append([]string(nil), managedHosts...)
 	return true, nil
@@ -662,6 +715,19 @@ func (f *fakeCloudflare) UpsertRecord(context.Context, string, string, string, b
 func (f *fakeCloudflare) DeleteRecord(context.Context, string, string) error {
 	f.deleteCount++
 	return nil
+}
+
+func generatedProjectsTestPrivateKeyPEM(t *testing.T) string {
+	t.Helper()
+
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("GenerateKey() error = %v", err)
+	}
+	return string(pem.EncodeToMemory(&pem.Block{
+		Type:  "RSA PRIVATE KEY",
+		Bytes: x509.MarshalPKCS1PrivateKey(key),
+	}))
 }
 
 type fakeDBService struct {

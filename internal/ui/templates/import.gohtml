@@ -29,7 +29,7 @@
       {{if not .GitHub.Configured}}
       <section class="card">
         <h2>GitHub App not configured</h2>
-        <p>Most installs configure GitHub later from the Settings page after the first login. Follow the host-level setup guide there, restart CaddyTower, then come back here.</p>
+        <p>Open Settings, paste the GitHub App ID, slug, webhook secret, and private key PEM there, then come back once the app is saved and connected.</p>
         <div class="actions section-spacer">
           <a class="button-link" href="/settings">Open settings</a>
         </div>
@@ -37,9 +37,9 @@
       {{else if not .GitHub.Connected}}
       <section class="card">
         <h2>Connect GitHub first</h2>
-        <p>Install the GitHub App for at least one account so CaddyTower can inspect repositories securely without personal access tokens.</p>
+        <p>Install the configured GitHub App for at least one account so CaddyTower can inspect repositories securely without personal access tokens.</p>
         <div class="actions section-spacer">
-          <a class="button-link" href="/github/install">Install GitHub App</a>
+          <a class="button-link" href="/github/install">Connect on GitHub</a>
           <a class="button-link secondary" href="/settings">Open settings</a>
         </div>
       </section>

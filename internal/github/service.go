@@ -30,6 +30,7 @@ import (
 type Config struct {
 	AppID          int64
 	AppSlug        string
+	PrivateKeyPEM  string
 	PrivateKeyPath string
 	WebhookSecret  string
 	APIBaseURL     string
@@ -139,7 +140,7 @@ func (s *Service) Configured() bool {
 	return s != nil &&
 		s.cfg.AppID > 0 &&
 		s.cfg.AppSlug != "" &&
-		s.cfg.PrivateKeyPath != "" &&
+		(strings.TrimSpace(s.cfg.PrivateKeyPEM) != "" || s.cfg.PrivateKeyPath != "") &&
 		s.cfg.WebhookSecret != ""
 }
 
@@ -544,39 +545,50 @@ func (s *Service) appJWT() (string, error) {
 
 func (s *Service) privateKey() (*rsa.PrivateKey, error) {
 	s.keyOnce.Do(func() {
+		pemValue := strings.TrimSpace(s.cfg.PrivateKeyPEM)
+		if pemValue != "" {
+			s.key, s.keyErr = parsePrivateKeyPEM([]byte(pemValue))
+			return
+		}
 		pemBytes, err := os.ReadFile(s.cfg.PrivateKeyPath)
 		if err != nil {
 			s.keyErr = fmt.Errorf("read github app private key: %w", err)
 			return
 		}
-		block, _ := pem.Decode(pemBytes)
-		if block == nil {
-			s.keyErr = fmt.Errorf("decode github app private key pem: no pem block found")
-			return
-		}
-		switch block.Type {
-		case "RSA PRIVATE KEY":
-			s.key, s.keyErr = x509.ParsePKCS1PrivateKey(block.Bytes)
-		case "PRIVATE KEY":
-			parsed, err := x509.ParsePKCS8PrivateKey(block.Bytes)
-			if err != nil {
-				s.keyErr = fmt.Errorf("parse github app private key: %w", err)
-				return
-			}
-			rsaKey, ok := parsed.(*rsa.PrivateKey)
-			if !ok {
-				s.keyErr = fmt.Errorf("github app private key is not RSA")
-				return
-			}
-			s.key = rsaKey
-		default:
-			s.keyErr = fmt.Errorf("unsupported github app private key type %q", block.Type)
-		}
+		s.key, s.keyErr = parsePrivateKeyPEM(pemBytes)
 	})
 	if s.keyErr != nil {
 		return nil, s.keyErr
 	}
 	return s.key, nil
+}
+
+func ValidatePrivateKeyPEM(value string) error {
+	_, err := parsePrivateKeyPEM([]byte(strings.TrimSpace(value)))
+	return err
+}
+
+func parsePrivateKeyPEM(pemBytes []byte) (*rsa.PrivateKey, error) {
+	block, _ := pem.Decode(pemBytes)
+	if block == nil {
+		return nil, fmt.Errorf("decode github app private key pem: no pem block found")
+	}
+	switch block.Type {
+	case "RSA PRIVATE KEY":
+		return x509.ParsePKCS1PrivateKey(block.Bytes)
+	case "PRIVATE KEY":
+		parsed, err := x509.ParsePKCS8PrivateKey(block.Bytes)
+		if err != nil {
+			return nil, fmt.Errorf("parse github app private key: %w", err)
+		}
+		rsaKey, ok := parsed.(*rsa.PrivateKey)
+		if !ok {
+			return nil, fmt.Errorf("github app private key is not RSA")
+		}
+		return rsaKey, nil
+	default:
+		return nil, fmt.Errorf("unsupported github app private key type %q", block.Type)
+	}
 }
 
 type installationWebhookPayload struct {

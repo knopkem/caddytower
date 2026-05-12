@@ -189,7 +189,7 @@ func (s *Server) renderImportPage(w http.ResponseWriter, r *http.Request, curren
 			ImageCheckMessage:    detection.ImageCheckMessage,
 			WillOpenWorkflowPR:   !detection.workflowDetected(),
 			SecretName:           importWorkflowSecretName,
-			WebhookSnippet:       buildGitHubWebhookSnippet(strings.TrimRight(s.cfg.PublicBaseURL, "/")+"/api/webhooks/deploy/"+normalizeImportSlug(detection.Repository.Name), importWorkflowSecretName),
+			WebhookSnippet:       buildGitHubWebhookSnippet(strings.TrimRight(s.runtimePublicBaseURL(r.Context()), "/")+"/api/webhooks/deploy/"+normalizeImportSlug(detection.Repository.Name), importWorkflowSecretName),
 			WorkflowPRFilePath:   importWorkflowPath,
 			WorkflowPRBranchName: importWorkflowBranchName(detection.Repository.Name),
 		}
@@ -225,7 +225,11 @@ func (s *Server) loadImportRepositories(ctx context.Context, installationID int6
 	if installationID <= 0 {
 		return nil, nil
 	}
-	repositories, err := s.github.ListRepositories(ctx, installationID)
+	githubService := s.runtimeGitHubService(ctx)
+	if githubService == nil || !githubService.Configured() {
+		return nil, fmt.Errorf("GitHub App is not configured")
+	}
+	repositories, err := githubService.ListRepositories(ctx, installationID)
 	if err != nil {
 		return nil, fmt.Errorf("list repositories: %w", err)
 	}
@@ -251,14 +255,15 @@ func (s *Server) loadImportRepositories(ctx context.Context, installationID int6
 }
 
 func (s *Server) detectImport(ctx context.Context, installationID int64, repoFullName string) (importDetection, error) {
-	if s.github == nil || !s.github.Configured() {
+	githubService := s.runtimeGitHubService(ctx)
+	if githubService == nil || !githubService.Configured() {
 		return importDetection{}, fmt.Errorf("GitHub App is not configured")
 	}
 	owner, repo, err := splitRepoFullName(repoFullName)
 	if err != nil {
 		return importDetection{}, err
 	}
-	repository, err := s.github.GetRepository(ctx, installationID, owner, repo)
+	repository, err := githubService.GetRepository(ctx, installationID, owner, repo)
 	if err != nil {
 		return importDetection{}, fmt.Errorf("load repository %s: %w", repoFullName, err)
 	}
@@ -268,7 +273,7 @@ func (s *Server) detectImport(ctx context.Context, installationID int64, repoFul
 		SuggestedImageRef: suggestedImageRef(repository.FullName),
 	}
 
-	if dockerfile, ok, err := s.optionalRepoFile(ctx, installationID, owner, repo, "Dockerfile", repository.DefaultBranch); err != nil {
+	if dockerfile, ok, err := s.optionalRepoFile(ctx, githubService, installationID, owner, repo, "Dockerfile", repository.DefaultBranch); err != nil {
 		return importDetection{}, err
 	} else if ok {
 		detection.DockerfileFound = true
@@ -278,7 +283,7 @@ func (s *Server) detectImport(ctx context.Context, installationID int64, repoFul
 	}
 
 	for _, filePath := range []string{"docker-compose.yml", "docker-compose.yaml", "compose.yml", "compose.yaml"} {
-		if _, ok, err := s.optionalRepoFile(ctx, installationID, owner, repo, filePath, repository.DefaultBranch); err != nil {
+		if _, ok, err := s.optionalRepoFile(ctx, githubService, installationID, owner, repo, filePath, repository.DefaultBranch); err != nil {
 			return importDetection{}, err
 		} else if ok {
 			detection.DockerCompose = true
@@ -286,8 +291,8 @@ func (s *Server) detectImport(ctx context.Context, installationID int64, repoFul
 		}
 	}
 
-	detection.FrameworkHint = s.detectFrameworkHint(ctx, installationID, owner, repo, repository.DefaultBranch)
-	detection.WorkflowPaths = s.detectWorkflowPaths(ctx, installationID, owner, repo, repository.DefaultBranch)
+	detection.FrameworkHint = s.detectFrameworkHint(ctx, githubService, installationID, owner, repo, repository.DefaultBranch)
+	detection.WorkflowPaths = s.detectWorkflowPaths(ctx, githubService, installationID, owner, repo, repository.DefaultBranch)
 
 	if !detection.workflowDetected() && !detection.DockerfileFound {
 		return importDetection{}, fmt.Errorf("could not find a root Dockerfile or an existing GHCR workflow for %s", repository.FullName)
@@ -299,8 +304,8 @@ func (s *Server) detectImport(ctx context.Context, installationID int64, repoFul
 	return detection, nil
 }
 
-func (s *Server) optionalRepoFile(ctx context.Context, installationID int64, owner, repo, filePath, ref string) ([]byte, bool, error) {
-	content, err := s.github.GetFileContent(ctx, installationID, owner, repo, filePath, ref)
+func (s *Server) optionalRepoFile(ctx context.Context, githubService *githubapp.Service, installationID int64, owner, repo, filePath, ref string) ([]byte, bool, error) {
+	content, err := githubService.GetFileContent(ctx, installationID, owner, repo, filePath, ref)
 	if err != nil {
 		if githubapp.IsNotFound(err) {
 			return nil, false, nil
@@ -310,7 +315,7 @@ func (s *Server) optionalRepoFile(ctx context.Context, installationID int64, own
 	return content, true, nil
 }
 
-func (s *Server) detectFrameworkHint(ctx context.Context, installationID int64, owner, repo, ref string) string {
+func (s *Server) detectFrameworkHint(ctx context.Context, githubService *githubapp.Service, installationID int64, owner, repo, ref string) string {
 	files := []struct {
 		Path string
 		Name string
@@ -322,15 +327,15 @@ func (s *Server) detectFrameworkHint(ctx context.Context, installationID int64, 
 		{Path: "Cargo.toml", Name: "Rust app"},
 	}
 	for _, file := range files {
-		if _, ok, err := s.optionalRepoFile(ctx, installationID, owner, repo, file.Path, ref); err == nil && ok {
+		if _, ok, err := s.optionalRepoFile(ctx, githubService, installationID, owner, repo, file.Path, ref); err == nil && ok {
 			return file.Name
 		}
 	}
 	return ""
 }
 
-func (s *Server) detectWorkflowPaths(ctx context.Context, installationID int64, owner, repo, ref string) []string {
-	entries, err := s.github.ListContents(ctx, installationID, owner, repo, ".github/workflows", ref)
+func (s *Server) detectWorkflowPaths(ctx context.Context, githubService *githubapp.Service, installationID int64, owner, repo, ref string) []string {
+	entries, err := githubService.ListContents(ctx, installationID, owner, repo, ".github/workflows", ref)
 	if err != nil {
 		if githubapp.IsNotFound(err) {
 			return nil
@@ -347,7 +352,7 @@ func (s *Server) detectWorkflowPaths(ctx context.Context, installationID int64, 
 		if !strings.HasSuffix(lowerPath, ".yml") && !strings.HasSuffix(lowerPath, ".yaml") {
 			continue
 		}
-		content, err := s.github.GetFileContent(ctx, installationID, owner, repo, entry.Path, ref)
+		content, err := githubService.GetFileContent(ctx, installationID, owner, repo, entry.Path, ref)
 		if err != nil {
 			s.logger.Warn("read github workflow", "path", entry.Path, "error", err)
 			continue
@@ -361,25 +366,29 @@ func (s *Server) detectWorkflowPaths(ctx context.Context, installationID int64, 
 }
 
 func (s *Server) createImportWorkflowPR(ctx context.Context, project projects.Project) (githubapp.PullRequest, error) {
+	githubService := s.runtimeGitHubService(ctx)
+	if githubService == nil || !githubService.Configured() {
+		return githubapp.PullRequest{}, fmt.Errorf("GitHub App is not configured")
+	}
 	owner, repo, err := splitRepoFullName(project.GitHubRepoFullName)
 	if err != nil {
 		return githubapp.PullRequest{}, err
 	}
-	baseSHA, err := s.github.GetBranchHeadSHA(ctx, project.GitHubInstallationID, owner, repo, project.GitHubDefaultBranch)
+	baseSHA, err := githubService.GetBranchHeadSHA(ctx, project.GitHubInstallationID, owner, repo, project.GitHubDefaultBranch)
 	if err != nil {
 		return githubapp.PullRequest{}, fmt.Errorf("load default branch head: %w", err)
 	}
 	branchName := importWorkflowBranchName(project.Slug)
-	if err := s.github.CreateBranch(ctx, project.GitHubInstallationID, owner, repo, branchName, baseSHA); err != nil && !githubapp.IsConflict(err) {
+	if err := githubService.CreateBranch(ctx, project.GitHubInstallationID, owner, repo, branchName, baseSHA); err != nil && !githubapp.IsConflict(err) {
 		return githubapp.PullRequest{}, fmt.Errorf("create workflow branch: %w", err)
 	}
-	webhookURL := strings.TrimRight(s.cfg.PublicBaseURL, "/") + "/api/webhooks/deploy/" + project.Slug
-	if err := s.github.PutFile(ctx, project.GitHubInstallationID, owner, repo, importWorkflowPath, branchName, "Add CaddyTower deploy workflow", []byte(buildGitHubDeployWorkflow(webhookURL, project.GitHubDefaultBranch, project.ImageRef))); err != nil {
+	webhookURL := strings.TrimRight(s.runtimePublicBaseURL(ctx), "/") + "/api/webhooks/deploy/" + project.Slug
+	if err := githubService.PutFile(ctx, project.GitHubInstallationID, owner, repo, importWorkflowPath, branchName, "Add CaddyTower deploy workflow", []byte(buildGitHubDeployWorkflow(webhookURL, project.GitHubDefaultBranch, project.ImageRef))); err != nil {
 		return githubapp.PullRequest{}, fmt.Errorf("write workflow file: %w", err)
 	}
 	body := "This workflow builds a GHCR image and notifies CaddyTower after pushes to `" + project.GitHubDefaultBranch + "`.\n\n" +
 		"After merging, add repository secret `" + importWorkflowSecretName + "` with the webhook secret shown in the CaddyTower project page."
-	return s.github.CreatePullRequest(ctx, project.GitHubInstallationID, owner, repo, githubapp.PullRequestInput{
+	return githubService.CreatePullRequest(ctx, project.GitHubInstallationID, owner, repo, githubapp.PullRequestInput{
 		Title: "Add CaddyTower deploy workflow",
 		Head:  branchName,
 		Base:  project.GitHubDefaultBranch,

@@ -47,10 +47,16 @@ type GitHubInstallationItem struct {
 }
 
 type GitHubStatusData struct {
-	Configured    bool
-	Connected     bool
-	InstallURL    string
-	Installations []GitHubInstallationItem
+	Configured           bool
+	Connected            bool
+	InstallURL           string
+	Installations        []GitHubInstallationItem
+	AppID                string
+	AppSlug              string
+	WebhookSecret        string
+	WebhookSecretPresent bool
+	PrivateKeyPresent    bool
+	StoredInApp          bool
 }
 
 type ProjectFormData struct {

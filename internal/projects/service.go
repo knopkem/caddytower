@@ -20,6 +20,7 @@ import (
 	"caddytower/internal/config"
 	"caddytower/internal/dbengines"
 	"caddytower/internal/dockerx"
+	githubapp "caddytower/internal/github"
 	"caddytower/internal/secrets"
 	"caddytower/internal/store"
 
@@ -32,6 +33,10 @@ const (
 	settingCloudflareZoneID   = "cloudflare_zone_id"
 	settingCloudflareAPIToken = "cloudflare_api_token"
 	settingCloudflareProxied  = "cloudflare_proxied"
+	settingGitHubAppID        = "github_app_id"
+	settingGitHubAppSlug      = "github_app_slug"
+	settingGitHubWebhook      = "github_webhook_secret"
+	settingGitHubPrivateKey   = "github_private_key_pem"
 	managedNetworkName        = "edge"
 	controllerSubdomain       = "caddytower"
 	controllerContainerName   = "caddytower"
@@ -102,6 +107,25 @@ type SettingsInput struct {
 	CloudflareZoneID  string
 	CloudflareToken   string
 	CloudflareProxied bool
+}
+
+type GitHubSettings struct {
+	AppID                int64
+	AppSlug              string
+	WebhookSecret        string
+	PrivateKeyPEM        string
+	PrivateKeyPath       string
+	WebhookSecretPresent bool
+	PrivateKeyPresent    bool
+	Configured           bool
+	StoredInApp          bool
+}
+
+type GitHubSettingsInput struct {
+	AppID         int64
+	AppSlug       string
+	WebhookSecret string
+	PrivateKeyPEM string
 }
 
 type Project struct {
@@ -482,6 +506,161 @@ func (s *Service) SaveSettings(ctx context.Context, input SettingsInput, userID 
 		return fmt.Errorf("settings saved but admin access update failed: %w", err)
 	}
 	return nil
+}
+
+func (s *Service) SaveGitHubSettings(ctx context.Context, input GitHubSettingsInput, userID string) error {
+	if s.store == nil {
+		return fmt.Errorf("settings store unavailable")
+	}
+	if s.secrets == nil {
+		return fmt.Errorf("CADDYTOWER_MASTER_KEY is required to store GitHub App credentials securely")
+	}
+	if input.AppID <= 0 {
+		return fmt.Errorf("github app id must be greater than zero")
+	}
+	appSlug := strings.TrimSpace(input.AppSlug)
+	if appSlug == "" {
+		return fmt.Errorf("github app slug is required")
+	}
+
+	current, err := s.GitHubSettings(ctx)
+	if err != nil {
+		return err
+	}
+	webhookSecret := strings.TrimSpace(input.WebhookSecret)
+	if webhookSecret == "" {
+		webhookSecret = current.WebhookSecret
+	}
+	if webhookSecret == "" {
+		return fmt.Errorf("github webhook secret is required")
+	}
+
+	privateKeyPEM := strings.TrimSpace(input.PrivateKeyPEM)
+	if privateKeyPEM == "" {
+		privateKeyPEM = current.PrivateKeyPEM
+	}
+	if privateKeyPEM == "" && !current.PrivateKeyPresent {
+		return fmt.Errorf("github app private key pem is required")
+	}
+	if privateKeyPEM != "" {
+		if err := githubapp.ValidatePrivateKeyPEM(privateKeyPEM); err != nil {
+			return fmt.Errorf("validate github app private key: %w", err)
+		}
+	}
+
+	values, err := s.store.GetSettings(ctx)
+	if err != nil {
+		return err
+	}
+	values[settingGitHubAppID] = strconv.FormatInt(input.AppID, 10)
+	values[settingGitHubAppSlug] = appSlug
+
+	encodedSecret, err := s.encodeSecret(webhookSecret)
+	if err != nil {
+		return err
+	}
+	values[settingGitHubWebhook] = encodedSecret
+
+	if privateKeyPEM != "" {
+		encodedKey, err := s.encodeSecret(privateKeyPEM)
+		if err != nil {
+			return err
+		}
+		values[settingGitHubPrivateKey] = encodedKey
+	}
+
+	if err := s.store.UpsertSettings(ctx, values); err != nil {
+		return err
+	}
+	if userID != "" {
+		if err := s.store.InsertAuditLog(ctx, uuid.NewString(), userID, "settings.update", "settings:github", map[string]any{
+			"app_id":         input.AppID,
+			"app_slug":       appSlug,
+			"webhook_secret": true,
+			"private_key":    privateKeyPEM != "" || current.PrivateKeyPresent,
+		}); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *Service) GitHubSettings(ctx context.Context) (GitHubSettings, error) {
+	if s.store == nil {
+		return GitHubSettings{
+			AppID:                s.cfg.GitHubAppID,
+			AppSlug:              strings.TrimSpace(s.cfg.GitHubAppSlug),
+			WebhookSecret:        strings.TrimSpace(s.cfg.GitHubWebhookSecret),
+			PrivateKeyPath:       strings.TrimSpace(s.cfg.GitHubAppPrivateKeyPath),
+			WebhookSecretPresent: strings.TrimSpace(s.cfg.GitHubWebhookSecret) != "",
+			PrivateKeyPresent:    strings.TrimSpace(s.cfg.GitHubAppPrivateKeyPath) != "",
+			Configured:           s.cfg.GitHubConfigured(),
+		}, nil
+	}
+
+	raw, err := s.store.GetSettings(ctx, settingGitHubAppID, settingGitHubAppSlug, settingGitHubWebhook, settingGitHubPrivateKey)
+	if err != nil {
+		return GitHubSettings{}, err
+	}
+
+	settings := GitHubSettings{
+		AppID:                s.cfg.GitHubAppID,
+		AppSlug:              strings.TrimSpace(s.cfg.GitHubAppSlug),
+		WebhookSecret:        strings.TrimSpace(s.cfg.GitHubWebhookSecret),
+		PrivateKeyPath:       strings.TrimSpace(s.cfg.GitHubAppPrivateKeyPath),
+		WebhookSecretPresent: strings.TrimSpace(s.cfg.GitHubWebhookSecret) != "",
+		PrivateKeyPresent:    strings.TrimSpace(s.cfg.GitHubAppPrivateKeyPath) != "",
+	}
+
+	if value := strings.TrimSpace(raw[settingGitHubAppID]); value != "" {
+		settings.StoredInApp = true
+		appID, err := strconv.ParseInt(value, 10, 64)
+		if err != nil {
+			return GitHubSettings{}, fmt.Errorf("parse stored github app id: %w", err)
+		}
+		settings.AppID = appID
+	}
+	if value := strings.TrimSpace(raw[settingGitHubAppSlug]); value != "" {
+		settings.StoredInApp = true
+		settings.AppSlug = value
+	}
+	if value := strings.TrimSpace(raw[settingGitHubWebhook]); value != "" {
+		settings.StoredInApp = true
+		decoded, err := s.decodeSecret(value)
+		if err != nil {
+			return GitHubSettings{}, err
+		}
+		settings.WebhookSecret = decoded
+		settings.WebhookSecretPresent = decoded != ""
+	}
+	if value := strings.TrimSpace(raw[settingGitHubPrivateKey]); value != "" {
+		settings.StoredInApp = true
+		decoded, err := s.decodeSecret(value)
+		if err != nil {
+			return GitHubSettings{}, err
+		}
+		settings.PrivateKeyPEM = decoded
+		settings.PrivateKeyPath = ""
+		settings.PrivateKeyPresent = decoded != ""
+	}
+	settings.Configured = settings.AppID > 0 && settings.AppSlug != "" && settings.WebhookSecret != "" && settings.PrivateKeyPresent
+	return settings, nil
+}
+
+func (s *Service) GitHubService(ctx context.Context) (*githubapp.Service, error) {
+	settings, err := s.GitHubSettings(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return githubapp.New(githubapp.Config{
+		AppID:          settings.AppID,
+		AppSlug:        settings.AppSlug,
+		PrivateKeyPEM:  settings.PrivateKeyPEM,
+		PrivateKeyPath: settings.PrivateKeyPath,
+		WebhookSecret:  settings.WebhookSecret,
+		APIBaseURL:     s.cfg.GitHubAPIBaseURL,
+		WebBaseURL:     s.cfg.GitHubWebBaseURL,
+	}, s.store, nil), nil
 }
 
 func (s *Service) RestartController(ctx context.Context, userID string) error {
@@ -1095,6 +1274,10 @@ func (s *Service) loadSettings(ctx context.Context) (Settings, error) {
 		CloudflareProxied:      strings.EqualFold(strings.TrimSpace(raw[settingCloudflareProxied]), "true"),
 		CloudflareTokenPresent: strings.TrimSpace(raw[settingCloudflareAPIToken]) != "",
 	}, nil
+}
+
+func (s *Service) Settings(ctx context.Context) (Settings, error) {
+	return s.loadSettings(ctx)
 }
 
 func (s *Service) loadProjects(ctx context.Context, settings Settings) ([]Project, error) {

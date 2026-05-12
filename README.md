@@ -131,29 +131,26 @@ before going public:
 | `CADDYTOWER_ROOT_DOMAIN` | Root domain that hosts your subdomains |
 | `CADDYTOWER_MASTER_KEY` | 32-byte base64 key (auto-generated on first run); required to encrypt secrets at rest |
 
-To unlock **Import from GitHub**, also set all four of:
+To unlock **Import from GitHub**, finish the normal first login, make sure the
+public admin URL is reachable, then open **Settings → GitHub import** and save:
 
-```
-CADDYTOWER_GITHUB_APP_ID
-CADDYTOWER_GITHUB_APP_SLUG
-CADDYTOWER_GITHUB_APP_PRIVATE_KEY_PATH
-CADDYTOWER_GITHUB_WEBHOOK_SECRET
-```
+- the numeric GitHub App ID
+- the GitHub App slug
+- the webhook secret
+- the downloaded private key PEM
 
-Configure the GitHub App with:
+Configure the GitHub App in GitHub with:
 
 - **Install URL:** `https://<github>/apps/<slug>/installations/new`
 - **Webhook URL:** `https://<your-host>/api/webhooks/github`
-- **Webhook secret:** same value as `CADDYTOWER_GITHUB_WEBHOOK_SECRET`
+- **Webhook secret:** the same value you paste into CaddyTower
 - **Repo permissions:** Metadata (read), Contents (read+write), Pull requests (read+write)
 - **Events:** `installation`, `installation_repositories`
 
-Mount the App's private key into the container and point
-`CADDYTOWER_GITHUB_APP_PRIVATE_KEY_PATH` at it.
-
-Most installs should do this from the in-app **Settings → GitHub import** guide
-after the first login rather than during the initial VPS installer run. The
-installer still supports an explicit advanced path via `--enable-github`.
+CaddyTower stores the webhook secret and private key encrypted at rest, so the
+normal setup flow no longer needs an env-file edit or a manual PEM mount. The
+installer still supports an explicit advanced path via `--enable-github` for
+legacy or highly customized installs.
 
 For a step-by-step explanation of these values, the Settings page fields,
 Cloudflare setup, the GitHub App flow, backups, SMTP alerts, and common setup

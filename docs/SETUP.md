@@ -191,17 +191,7 @@ The recommended path is:
 4. follow the GitHub setup guide shown in the app
 
 The installer still supports an advanced opt-in path for GitHub setup if you
-explicitly pass `--enable-github`, but that is no longer the default experience.
-
-GitHub import only works when all four GitHub App environment variables are set
-together:
-
-```dotenv
-CADDYTOWER_GITHUB_APP_ID=
-CADDYTOWER_GITHUB_APP_SLUG=
-CADDYTOWER_GITHUB_APP_PRIVATE_KEY_PATH=
-CADDYTOWER_GITHUB_WEBHOOK_SECRET=
-```
+explicitly pass `--enable-github`, but the normal path is now fully in-app.
 
 ### Step 1: make sure your public URL is final
 
@@ -222,8 +212,7 @@ Use:
 
 - **Homepage URL**: `https://tower.example.com`
 - **Webhook URL**: `https://tower.example.com/api/webhooks/github`
-- **Webhook secret**: the same value you will place in
-  `CADDYTOWER_GITHUB_WEBHOOK_SECRET`
+- **Webhook secret**: the same value you will paste into CaddyTower
 
 Repository permissions:
 
@@ -242,47 +231,18 @@ After creating the app:
 - copy the **App slug**
 - generate a **private key** and download the PEM file
 
-### Step 3: mount the private key into the container
+### Step 3: save the GitHub App in CaddyTower
 
-The stock compose file does not know where your GitHub App PEM lives, so add a
-read-only mount for it.
+Open **Settings → GitHub import** and paste:
 
-For example, place the PEM on the VPS:
+- **GitHub App ID**
+- **GitHub App slug**
+- **Webhook secret**
+- **GitHub App private key PEM**
 
-```bash
-mkdir -p /opt/caddytower/secrets
-cp ~/Downloads/caddytower-github-app.pem /opt/caddytower/secrets/github-app.pem
-```
-
-Then edit `/opt/caddytower/docker-compose.yml` and add a volume to the
-`caddytower` service:
-
-```yaml
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
-      - caddytower-data:/data
-      - ./secrets/github-app.pem:/run/secrets/github-app.pem:ro
-```
-
-Set the path in `caddytower.env`:
-
-```dotenv
-CADDYTOWER_GITHUB_APP_PRIVATE_KEY_PATH=/run/secrets/github-app.pem
-```
-
-If you rerun the bootstrap script later, re-check any manual changes you made to
-`/opt/caddytower/docker-compose.yml`, including this PEM mount.
-
-### Step 4: fill in the GitHub environment values
-
-Example:
-
-```dotenv
-CADDYTOWER_GITHUB_APP_ID=1234567
-CADDYTOWER_GITHUB_APP_SLUG=caddytower
-CADDYTOWER_GITHUB_APP_PRIVATE_KEY_PATH=/run/secrets/github-app.pem
-CADDYTOWER_GITHUB_WEBHOOK_SECRET=replace-with-a-random-secret
-```
+CaddyTower stores the webhook secret and PEM encrypted at rest, so the normal
+setup flow does not require editing `caddytower.env` or mounting the key into
+the container manually.
 
 If you use GitHub Enterprise Server or another GitHub-compatible deployment, set
 these too:
@@ -292,17 +252,12 @@ CADDYTOWER_GITHUB_API_BASE_URL=https://github.example.com/api/v3
 CADDYTOWER_GITHUB_WEB_BASE_URL=https://github.example.com
 ```
 
-### Step 5: restart CaddyTower
+### Step 4: connect the app on GitHub
 
-```bash
-cd /opt/caddytower
-docker compose up -d
-```
-
-Then open **Settings**. If the GitHub App configuration is valid, you can click
-**Connect on GitHub**, install the app for your account or org, and return to
-the settings page. After GitHub sends the installation webhook, the installation
-should appear there and `/projects/import` becomes available.
+After the settings form saves successfully, click **Connect on GitHub**, install
+the app for your account or org, and return to the settings page. After GitHub
+sends the installation webhook, the installation should appear there and
+`/projects/import` becomes available.
 
 ### What the import flow does
 
@@ -393,8 +348,7 @@ subdomains, for example `example.com`.
 
 Usually one of these is missing:
 
-- one of the four required GitHub App env vars
-- the PEM file mount inside the container
+- the GitHub App form in Settings has not been saved yet
 - the public HTTPS URL and webhook route
 - the GitHub App installation webhook has not been delivered yet
 
