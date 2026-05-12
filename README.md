@@ -29,24 +29,28 @@ deploys, domains, DNS, env, databases, logs, health, and rollback.
 You need a VPS with **Docker (with the Compose plugin)**. Nothing else.
 
 ```bash
-# 1. Pull the repo onto the VPS (or just the deploy/ + scripts/ directories).
-git clone https://github.com/knopkem/caddytower /opt/caddytower-src
-cd /opt/caddytower-src
+# Install from the latest tagged release (recommended).
+curl -fsSL https://raw.githubusercontent.com/knopkem/caddytower/main/install.sh | bash
 ```
 
-```bash
-# 2. Run the bootstrap script. It checks Docker, creates the `edge` network,
-#    copies the compose + Caddy files, generates a master key, and starts
-#    shared-caddy + watchtower if they are not already present.
-./scripts/bootstrap-caddytower.sh /opt/caddytower
-```
+The installer defaults to:
+
+- `ghcr.io/knopkem/caddytower:latest`
+- `/opt/caddytower`
+- a local SSH-tunnel bootstrap first, unless you choose the final public HTTPS URL
+
+It walks you through the important values instead of requiring a repo checkout
+or manual file edits up front.
 
 ```bash
-# 3. The first run stops after writing /opt/caddytower/caddytower.env so you
-#    can fill in CADDYTOWER_IMAGE, CADDYTOWER_PUBLIC_BASE_URL, and
-#    CADDYTOWER_ROOT_DOMAIN. Edit it, then run the script again.
-./scripts/bootstrap-caddytower.sh /opt/caddytower
+# Install from main only if you explicitly want the moving branch.
+curl -fsSL https://raw.githubusercontent.com/knopkem/caddytower/main/install.sh | bash -s -- --ref main
 ```
+
+The installer resolves the latest release tag by default, downloads the install
+assets for that tag, writes `/opt/caddytower`, generates
+`CADDYTOWER_MASTER_KEY`, and starts bundled `shared-caddy` / `watchtower` only
+when they are missing.
 
 The controller binds to `127.0.0.1:8080` only, so the first login goes through
 an SSH tunnel:
@@ -61,6 +65,13 @@ open http://127.0.0.1:8080/setup
 Create the first admin user, scan the TOTP QR with any authenticator
 (1Password, Bitwarden, Aegis, Google/Microsoft Authenticator, Authy, …), and
 sign in. The dashboard opens **Guided start** automatically.
+
+If you want the old local-repo workflow for development or manual tweaking, you
+can still clone the repo and run:
+
+```bash
+./scripts/bootstrap-caddytower.sh /opt/caddytower
+```
 
 ## Getting your first project live
 
@@ -129,6 +140,10 @@ Configure the GitHub App with:
 Mount the App's private key into the container and point
 `CADDYTOWER_GITHUB_APP_PRIVATE_KEY_PATH` at it.
 
+For a step-by-step explanation of these values, the Settings page fields,
+Cloudflare setup, the GitHub App flow, backups, SMTP alerts, and common setup
+mistakes, see [`docs/SETUP.md`](docs/SETUP.md).
+
 Backups, SMTP warnings, GHES base URLs, and the full table of tunables are
 documented in [`deploy/caddytower.env.example`](deploy/caddytower.env.example).
 
@@ -160,8 +175,11 @@ CGO_ENABLED=0 go test ./...
 
 ## More docs
 
+- [`docs/SETUP.md`](docs/SETUP.md) — full install and configuration tutorial,
+  including GitHub App setup and optional features.
 - [`docs/MIGRATION.md`](docs/MIGRATION.md) — cutover runbook for moving an
   existing hand-written Caddy setup onto CaddyTower without downtime.
+- [`install.sh`](install.sh) — curl-first guided installer entrypoint.
 - [`deploy/caddytower.env.example`](deploy/caddytower.env.example) — every
   available environment variable with defaults.
 
