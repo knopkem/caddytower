@@ -79,7 +79,8 @@ This installer:
 - generates `CADDYTOWER_MASTER_KEY` on first run
 - fills in the main setup values interactively
 - leaves GitHub App setup for later by default so first login is simpler
-- starts bundled `shared-caddy` and `watchtower` only when they are missing
+- starts bundled `shared-caddy` and `watchtower` only when they are missing,
+  including installs where existing containers use compose-generated names
 
 If `/opt/caddytower` or Docker access requires elevated privileges, the
 installer asks for `sudo` when needed.

@@ -52,7 +52,8 @@ curl -fsSL https://raw.githubusercontent.com/knopkem/caddytower/main/install.sh 
 The installer resolves the latest release tag by default, downloads the install
 assets for that tag, writes `/opt/caddytower`, generates
 `CADDYTOWER_MASTER_KEY`, and starts bundled `shared-caddy` / `watchtower` only
-when they are missing.
+when they are missing, including existing compose-managed containers with
+generated names.
 
 If the target directory or Docker access needs elevated privileges, the script
 will request `sudo` when needed instead of failing immediately.

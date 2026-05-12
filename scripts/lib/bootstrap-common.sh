@@ -250,6 +250,21 @@ caddytower_ensure_edge_network() {
   fi
 }
 
+caddytower_service_container_exists() {
+  local service_name="${1:-}"
+
+  [[ -n "${service_name}" ]] || caddytower_die "internal error: missing service name"
+
+  caddytower_docker ps -a --format '{{.Names}}' | awk -v name="${service_name}" '
+    $0 ~ ("(^|.*[-_])" name "([-_][0-9]+)?$") {
+      found = 1
+    }
+    END {
+      exit found ? 0 : 1
+    }
+  '
+}
+
 caddytower_configure_github_pem_mount() {
   local compose_file="${1:-}"
   local host_path="${2:-}"
@@ -291,12 +306,12 @@ caddytower_compose_up() {
 
   [[ -n "${target_dir}" ]] || caddytower_die "internal error: missing target directory"
 
-  if ! caddytower_docker container inspect shared-caddy >/dev/null 2>&1; then
+  if ! caddytower_service_container_exists shared-caddy; then
     compose_profiles+=(--profile bundled-caddy)
     caddytower_log "No shared-caddy container found; bootstrap will start the bundled Caddy service."
   fi
 
-  if ! caddytower_docker container inspect watchtower >/dev/null 2>&1; then
+  if ! caddytower_service_container_exists watchtower; then
     compose_profiles+=(--profile bundled-watchtower)
     caddytower_log "No watchtower container found; bootstrap will start the bundled Watchtower service."
   fi
