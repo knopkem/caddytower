@@ -3,12 +3,16 @@
 CaddyTower is a lightweight control plane for a single Docker VPS running shared
 Caddy, Cloudflare DNS, and image-only deployments from GHCR.
 
-This repository currently contains the initial scaffold:
+This repository currently contains:
 
 - Go 1.25 app with a small chi-based HTTP server
 - Embedded HTML templates and static assets
 - Health and version endpoints
 - First-user bootstrap, password login, TOTP, sessions, and CSRF protection
+- Deployment settings for shared Caddy and Cloudflare DNS
+- Web project CRUD with Docker reconciliation and Caddy route management
+- Shared Postgres and MariaDB attachments with per-project credentials
+- HMAC-signed deploy webhooks for GitHub Actions
 - Multi-stage distroless Docker image
 - GitHub Actions workflow for test/build/push to GHCR
 
@@ -61,6 +65,7 @@ The container image overrides `CADDYTOWER_DATA_DIR` to `/data`.
 - `/` — scaffold landing page
 - `/setup` — first-admin bootstrap
 - `/login` — password + TOTP login
+- `/api/webhooks/deploy/{slug}` — signed redeploy webhook
 - `/healthz` — liveness probe
 - `/readyz` — readiness probe
 - `/-/version` — build metadata as JSON

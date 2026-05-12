@@ -3,6 +3,7 @@ package server
 import (
 	"log/slog"
 	"net/http"
+	"sync"
 	"time"
 )
 
@@ -44,4 +45,55 @@ type noopWriter struct{}
 
 func (noopWriter) Write(p []byte) (int, error) {
 	return len(p), nil
+}
+
+type webhookRateLimiter struct {
+	mu      sync.Mutex
+	limit   int
+	window  time.Duration
+	entries map[string]rateLimitEntry
+}
+
+type rateLimitEntry struct {
+	count    int
+	started  time.Time
+	lastSeen time.Time
+}
+
+func newWebhookRateLimiter(limit int, window time.Duration) *webhookRateLimiter {
+	return &webhookRateLimiter{
+		limit:   limit,
+		window:  window,
+		entries: map[string]rateLimitEntry{},
+	}
+}
+
+func (l *webhookRateLimiter) Allow(key string) bool {
+	now := time.Now()
+
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	for existingKey, entry := range l.entries {
+		if now.Sub(entry.lastSeen) > l.window {
+			delete(l.entries, existingKey)
+		}
+	}
+
+	entry := l.entries[key]
+	if entry.started.IsZero() || now.Sub(entry.started) >= l.window {
+		entry = rateLimitEntry{count: 1, started: now, lastSeen: now}
+		l.entries[key] = entry
+		return true
+	}
+	if entry.count >= l.limit {
+		entry.lastSeen = now
+		l.entries[key] = entry
+		return false
+	}
+
+	entry.count++
+	entry.lastSeen = now
+	l.entries[key] = entry
+	return true
 }

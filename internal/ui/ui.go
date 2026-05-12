@@ -65,6 +65,22 @@ type ProjectListItem struct {
 	Status            string
 }
 
+type DBAttachmentItem struct {
+	ID             int64
+	Engine         string
+	DBName         string
+	DBUser         string
+	EnvVarName     string
+	Host           string
+	Port           int
+	ConnectionHint string
+}
+
+type DBAttachmentFormData struct {
+	Engine     string
+	EnvVarName string
+}
+
 type HomePageData struct {
 	GeneratedAt  time.Time
 	PageTitle    string
@@ -99,14 +115,18 @@ type LoginPageData struct {
 }
 
 type ProjectPageData struct {
-	PageTitle    string
-	Headline     string
-	CSRFToken    string
-	CurrentUser  string
-	InfoMessage  string
-	ErrorMessage string
-	Project      ProjectFormData
-	ProjectMeta  ProjectListItem
+	PageTitle      string
+	Headline       string
+	CSRFToken      string
+	CurrentUser    string
+	InfoMessage    string
+	ErrorMessage   string
+	Project        ProjectFormData
+	ProjectMeta    ProjectListItem
+	WebhookURL     string
+	WebhookSecret  string
+	Attachments    []DBAttachmentItem
+	AttachmentForm DBAttachmentFormData
 }
 
 func New() (*UI, error) {

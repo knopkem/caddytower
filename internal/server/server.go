@@ -2,9 +2,12 @@ package server
 
 import (
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"strconv"
@@ -30,6 +33,7 @@ type Server struct {
 	ready    readinessChecker
 	auth     *auth.Service
 	projects *projects.Service
+	limiter  *webhookRateLimiter
 }
 
 type readinessChecker interface {
@@ -45,6 +49,7 @@ func New(cfg config.Config, webUI *ui.UI, logger *slog.Logger, build version.Inf
 		ready:    ready,
 		auth:     authService,
 		projects: projectService,
+		limiter:  newWebhookRateLimiter(10, time.Minute),
 	}
 }
 
@@ -63,6 +68,9 @@ func (s *Server) Router() http.Handler {
 	router.Get("/-/version", s.handleVersion)
 	router.Handle("/assets/*", http.StripPrefix("/assets/", assets))
 	router.Get("/", s.handleRoot)
+	if s.projects != nil {
+		router.Post("/api/webhooks/deploy/{slug}", s.handleDeployWebhook)
+	}
 
 	if s.auth != nil {
 		router.Get("/setup", s.handleSetupForm)
@@ -75,6 +83,9 @@ func (s *Server) Router() http.Handler {
 			router.Post("/projects", s.handleProjectCreate)
 			router.Get("/projects/{projectID}", s.handleProjectPage)
 			router.Post("/projects/{projectID}", s.handleProjectUpdate)
+			router.Post("/projects/{projectID}/databases", s.handleProjectDBAttach)
+			router.Post("/projects/{projectID}/databases/{attachmentID}/rotate", s.handleProjectDBRotate)
+			router.Post("/projects/{projectID}/databases/{attachmentID}/delete", s.handleProjectDBDelete)
 			router.Post("/projects/{projectID}/deploy", s.handleProjectRedeploy)
 			router.Post("/projects/{projectID}/delete", s.handleProjectDelete)
 		}
@@ -388,6 +399,82 @@ func (s *Server) handleProjectUpdate(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/projects/"+project.ID+"?info=Project+updated", http.StatusFound)
 }
 
+func (s *Server) handleProjectDBAttach(w http.ResponseWriter, r *http.Request) {
+	user, ok := s.requireAuthenticated(w, r)
+	if !ok {
+		return
+	}
+	if !s.auth.ValidateCSRF(r) {
+		http.Error(w, "invalid csrf token", http.StatusForbidden)
+		return
+	}
+
+	projectID := chi.URLParam(r, "projectID")
+	project, err := s.projects.AttachDatabase(r.Context(), projects.DatabaseAttachmentInput{
+		ProjectID:  projectID,
+		Engine:     strings.TrimSpace(r.FormValue("engine")),
+		EnvVarName: strings.TrimSpace(r.FormValue("env_var_name")),
+	}, user.ID)
+	if err != nil {
+		s.renderProjectWithFallback(w, r, user.Email, projectID, ui.ProjectFormData{}, err.Error(), "")
+		return
+	}
+
+	http.Redirect(w, r, "/projects/"+project.ID+"?info=Database+attached", http.StatusFound)
+}
+
+func (s *Server) handleProjectDBRotate(w http.ResponseWriter, r *http.Request) {
+	user, ok := s.requireAuthenticated(w, r)
+	if !ok {
+		return
+	}
+	if !s.auth.ValidateCSRF(r) {
+		http.Error(w, "invalid csrf token", http.StatusForbidden)
+		return
+	}
+
+	projectID := chi.URLParam(r, "projectID")
+	attachmentID, err := strconv.ParseInt(chi.URLParam(r, "attachmentID"), 10, 64)
+	if err != nil {
+		http.Error(w, "invalid attachment id", http.StatusBadRequest)
+		return
+	}
+
+	project, err := s.projects.RotateDatabaseAttachment(r.Context(), projectID, attachmentID, user.ID)
+	if err != nil {
+		s.renderProjectWithFallback(w, r, user.Email, projectID, ui.ProjectFormData{}, err.Error(), "")
+		return
+	}
+
+	http.Redirect(w, r, "/projects/"+project.ID+"?info=Database+password+rotated", http.StatusFound)
+}
+
+func (s *Server) handleProjectDBDelete(w http.ResponseWriter, r *http.Request) {
+	user, ok := s.requireAuthenticated(w, r)
+	if !ok {
+		return
+	}
+	if !s.auth.ValidateCSRF(r) {
+		http.Error(w, "invalid csrf token", http.StatusForbidden)
+		return
+	}
+
+	projectID := chi.URLParam(r, "projectID")
+	attachmentID, err := strconv.ParseInt(chi.URLParam(r, "attachmentID"), 10, 64)
+	if err != nil {
+		http.Error(w, "invalid attachment id", http.StatusBadRequest)
+		return
+	}
+
+	project, err := s.projects.DeleteDatabaseAttachment(r.Context(), projectID, attachmentID, user.ID)
+	if err != nil {
+		s.renderProjectWithFallback(w, r, user.Email, projectID, ui.ProjectFormData{}, err.Error(), "")
+		return
+	}
+
+	http.Redirect(w, r, "/projects/"+project.ID+"?info=Database+detached", http.StatusFound)
+}
+
 func (s *Server) handleProjectRedeploy(w http.ResponseWriter, r *http.Request) {
 	user, ok := s.requireAuthenticated(w, r)
 	if !ok {
@@ -426,6 +513,47 @@ func (s *Server) handleProjectDelete(w http.ResponseWriter, r *http.Request) {
 	}
 
 	http.Redirect(w, r, "/?info=Project+deleted", http.StatusFound)
+}
+
+func (s *Server) handleDeployWebhook(w http.ResponseWriter, r *http.Request) {
+	slug := strings.TrimSpace(chi.URLParam(r, "slug"))
+	if slug == "" {
+		http.NotFound(w, r)
+		return
+	}
+	if !s.limiter.Allow(auth.ClientIP(r) + ":" + slug) {
+		http.Error(w, "rate limit exceeded", http.StatusTooManyRequests)
+		return
+	}
+
+	project, _, err := s.projects.GetProjectBySlug(r.Context(), slug)
+	if err != nil {
+		s.renderProjectError(w, err)
+		return
+	}
+
+	payload, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+	if err != nil {
+		http.Error(w, "failed to read request body", http.StatusBadRequest)
+		return
+	}
+	if !validWebhookSignature(project.WebhookSecret, r.Header.Get("X-Signature"), payload) {
+		http.Error(w, "invalid signature", http.StatusUnauthorized)
+		return
+	}
+
+	if _, err := s.projects.RedeployProjectByWebhook(r.Context(), slug); err != nil {
+		s.logger.Error("webhook redeploy", "slug", slug, "error", err)
+		http.Error(w, "failed to redeploy project", http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.WriteHeader(http.StatusAccepted)
+	_ = json.NewEncoder(w).Encode(map[string]string{
+		"status":  "accepted",
+		"project": slug,
+	})
 }
 
 func (s *Server) handleLoginSubmit(w http.ResponseWriter, r *http.Request) {
@@ -529,15 +657,33 @@ func (s *Server) requireAuthenticated(w http.ResponseWriter, r *http.Request) (a
 func (s *Server) renderProjectPage(w http.ResponseWriter, r *http.Request, currentUser string, project projects.Project, form ui.ProjectFormData, errorMessage, infoMessage string) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 
+	attachments := make([]ui.DBAttachmentItem, 0, len(project.DBAttachments))
+	for _, attachment := range project.DBAttachments {
+		attachments = append(attachments, ui.DBAttachmentItem{
+			ID:             attachment.ID,
+			Engine:         attachment.Engine,
+			DBName:         attachment.DBName,
+			DBUser:         attachment.DBUser,
+			EnvVarName:     attachment.EnvVarName,
+			Host:           attachment.Host,
+			Port:           attachment.Port,
+			ConnectionHint: attachment.ConnectionHint,
+		})
+	}
+
 	data := ui.ProjectPageData{
-		PageTitle:    "CaddyTower | " + project.Name,
-		Headline:     "Edit " + project.Name,
-		CSRFToken:    s.auth.EnsureCSRFCookie(w, r),
-		CurrentUser:  currentUser,
-		InfoMessage:  infoMessage,
-		ErrorMessage: errorMessage,
-		Project:      form,
-		ProjectMeta:  projectListItem(project),
+		PageTitle:      "CaddyTower | " + project.Name,
+		Headline:       "Edit " + project.Name,
+		CSRFToken:      s.auth.EnsureCSRFCookie(w, r),
+		CurrentUser:    currentUser,
+		InfoMessage:    infoMessage,
+		ErrorMessage:   errorMessage,
+		Project:        form,
+		ProjectMeta:    projectListItem(project),
+		WebhookURL:     strings.TrimRight(s.cfg.PublicBaseURL, "/") + "/api/webhooks/deploy/" + project.Slug,
+		WebhookSecret:  project.WebhookSecret,
+		Attachments:    attachments,
+		AttachmentForm: ui.DBAttachmentFormData{Engine: "pg", EnvVarName: "DATABASE_URL"},
 	}
 
 	if err := s.ui.Render(w, "project.gohtml", data); err != nil {
@@ -642,6 +788,17 @@ func projectListItem(project projects.Project) ui.ProjectListItem {
 		WatchtowerEnabled: project.WatchtowerEnabled,
 		Status:            project.Status,
 	}
+}
+
+func validWebhookSignature(secret, provided string, payload []byte) bool {
+	if secret == "" || provided == "" {
+		return false
+	}
+	provided = strings.TrimSpace(provided)
+	expectedMAC := hmac.New(sha256.New, []byte(secret))
+	expectedMAC.Write(payload)
+	expected := "sha256=" + fmt.Sprintf("%x", expectedMAC.Sum(nil))
+	return hmac.Equal([]byte(expected), []byte(provided))
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {

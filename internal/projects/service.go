@@ -14,6 +14,7 @@ import (
 	"caddytower/internal/caddyadmin"
 	"caddytower/internal/cloudflare"
 	"caddytower/internal/config"
+	"caddytower/internal/dbengines"
 	"caddytower/internal/dockerx"
 	"caddytower/internal/secrets"
 	"caddytower/internal/store"
@@ -44,6 +45,13 @@ type caddyService interface {
 	ReconcileManagedRoutes(context.Context, []caddyadmin.HTTPRoute, []string) (bool, error)
 }
 
+type dbService interface {
+	AttachDatabase(context.Context, string, string, string, string) (dbengines.Attachment, error)
+	ListAttachments(context.Context, string) ([]dbengines.Attachment, error)
+	RotateAttachmentPassword(context.Context, int64) (dbengines.Attachment, error)
+	DeleteAttachment(context.Context, int64) error
+}
+
 type cloudflareClient interface {
 	ValidateToken(context.Context) error
 	UpsertCNAME(context.Context, string, string, string, bool) (cloudflare.DNSRecord, bool, error)
@@ -56,6 +64,7 @@ type Service struct {
 	secrets       *secrets.Service
 	docker        dockerService
 	caddy         caddyService
+	db            dbService
 	logger        *slog.Logger
 	newCloudflare func(string) (cloudflareClient, error)
 }
@@ -80,6 +89,7 @@ type Project struct {
 	ID                string
 	Name              string
 	Slug              string
+	WebhookSecret     string
 	ImageRef          string
 	Subdomain         string
 	FullDomain        string
@@ -91,6 +101,7 @@ type Project struct {
 	CreatedAt         time.Time
 	UpdatedAt         time.Time
 	Status            string
+	DBAttachments     []DBAttachment
 }
 
 type Dashboard struct {
@@ -109,6 +120,24 @@ type WebProjectInput struct {
 	EnvText           string
 }
 
+type DBAttachment struct {
+	ID             int64
+	Engine         string
+	DBName         string
+	DBUser         string
+	EnvVarName     string
+	Host           string
+	Port           int
+	Password       string
+	ConnectionHint string
+}
+
+type DatabaseAttachmentInput struct {
+	ProjectID  string
+	Engine     string
+	EnvVarName string
+}
+
 func New(cfg config.Config, stateStore *store.Store, secretService *secrets.Service, dockerSvc dockerService, caddySvc caddyService, logger *slog.Logger) *Service {
 	return &Service{
 		cfg:     cfg,
@@ -116,6 +145,7 @@ func New(cfg config.Config, stateStore *store.Store, secretService *secrets.Serv
 		secrets: secretService,
 		docker:  dockerSvc,
 		caddy:   caddySvc,
+		db:      dbengines.New(stateStore, secretService, dockerSvc),
 		logger:  logger,
 		newCloudflare: func(token string) (cloudflareClient, error) {
 			return cloudflare.New(token)
@@ -147,6 +177,25 @@ func (s *Service) GetProject(ctx context.Context, projectID string) (Project, Se
 	}
 
 	record, err := s.store.GetProject(ctx, projectID)
+	if err != nil {
+		return Project{}, Settings{}, err
+	}
+
+	project, err := s.projectFromRecord(ctx, record, settings)
+	if err != nil {
+		return Project{}, Settings{}, err
+	}
+
+	return project, settings, nil
+}
+
+func (s *Service) GetProjectBySlug(ctx context.Context, slug string) (Project, Settings, error) {
+	settings, err := s.loadSettings(ctx)
+	if err != nil {
+		return Project{}, Settings{}, err
+	}
+
+	record, err := s.store.GetProjectBySlug(ctx, slug)
 	if err != nil {
 		return Project{}, Settings{}, err
 	}
@@ -289,10 +338,37 @@ func (s *Service) RedeployProject(ctx context.Context, projectID, userID string)
 	return project, nil
 }
 
+func (s *Service) RedeployProjectByWebhook(ctx context.Context, slug string) (Project, error) {
+	project, settings, err := s.GetProjectBySlug(ctx, slug)
+	if err != nil {
+		return Project{}, err
+	}
+
+	if err := s.applyProject(ctx, project, settings); err != nil {
+		return Project{}, err
+	}
+
+	if err := s.store.InsertAuditLog(ctx, uuid.NewString(), "", "project.webhook_redeploy", "project:"+project.ID, map[string]any{
+		"slug": project.Slug,
+	}); err != nil {
+		return Project{}, err
+	}
+
+	return project, nil
+}
+
 func (s *Service) DeleteProject(ctx context.Context, projectID, userID string) error {
 	project, settings, err := s.GetProject(ctx, projectID)
 	if err != nil {
 		return err
+	}
+
+	if s.db != nil {
+		for _, attachment := range project.DBAttachments {
+			if err := s.db.DeleteAttachment(ctx, attachment.ID); err != nil {
+				return err
+			}
+		}
 	}
 
 	if err := s.store.DeleteProject(ctx, projectID); err != nil {
@@ -316,6 +392,112 @@ func (s *Service) DeleteProject(ctx context.Context, projectID, userID string) e
 	return s.store.InsertAuditLog(ctx, uuid.NewString(), userID, "project.delete", "project:"+projectID, map[string]any{
 		"slug": project.Slug,
 	})
+}
+
+func (s *Service) AttachDatabase(ctx context.Context, input DatabaseAttachmentInput, userID string) (Project, error) {
+	project, settings, err := s.GetProject(ctx, input.ProjectID)
+	if err != nil {
+		return Project{}, err
+	}
+	if s.db == nil {
+		return Project{}, fmt.Errorf("database engine service is unavailable")
+	}
+
+	attachment, err := s.db.AttachDatabase(ctx, project.ID, project.Slug, input.Engine, input.EnvVarName)
+	if err != nil {
+		return Project{}, err
+	}
+
+	project, settings, err = s.GetProject(ctx, project.ID)
+	if err != nil {
+		return Project{}, err
+	}
+	if err := s.applyProject(ctx, project, settings); err != nil {
+		return Project{}, fmt.Errorf("database attached but project redeploy failed: %w", err)
+	}
+
+	if err := s.store.InsertAuditLog(ctx, uuid.NewString(), userID, "project.db.attach", "project:"+project.ID, map[string]any{
+		"attachment": attachment.ID,
+		"engine":     attachment.Engine,
+		"env_var":    attachment.EnvVarName,
+	}); err != nil {
+		return Project{}, err
+	}
+
+	return project, nil
+}
+
+func (s *Service) RotateDatabaseAttachment(ctx context.Context, projectID string, attachmentID int64, userID string) (Project, error) {
+	if s.db == nil {
+		return Project{}, fmt.Errorf("database engine service is unavailable")
+	}
+
+	attachment, err := s.db.RotateAttachmentPassword(ctx, attachmentID)
+	if err != nil {
+		return Project{}, err
+	}
+	if attachment.ProjectID != projectID {
+		return Project{}, fmt.Errorf("attachment does not belong to this project")
+	}
+
+	project, settings, err := s.GetProject(ctx, projectID)
+	if err != nil {
+		return Project{}, err
+	}
+	if err := s.applyProject(ctx, project, settings); err != nil {
+		return Project{}, fmt.Errorf("credentials rotated but project redeploy failed: %w", err)
+	}
+
+	if err := s.store.InsertAuditLog(ctx, uuid.NewString(), userID, "project.db.rotate", "project:"+projectID, map[string]any{
+		"attachment": attachmentID,
+		"engine":     attachment.Engine,
+	}); err != nil {
+		return Project{}, err
+	}
+
+	return project, nil
+}
+
+func (s *Service) DeleteDatabaseAttachment(ctx context.Context, projectID string, attachmentID int64, userID string) (Project, error) {
+	if s.db == nil {
+		return Project{}, fmt.Errorf("database engine service is unavailable")
+	}
+
+	attachments, err := s.db.ListAttachments(ctx, projectID)
+	if err != nil {
+		return Project{}, err
+	}
+
+	found := false
+	for _, attachment := range attachments {
+		if attachment.ID == attachmentID {
+			found = true
+			break
+		}
+	}
+	if !found {
+		return Project{}, store.ErrNotFound
+	}
+
+	if err := s.db.DeleteAttachment(ctx, attachmentID); err != nil {
+		return Project{}, err
+	}
+
+	project, settings, err := s.GetProject(ctx, projectID)
+	if err != nil {
+		return Project{}, err
+	}
+	if err := s.applyProject(ctx, project, settings); err != nil {
+		return Project{}, fmt.Errorf("database detached but project redeploy failed: %w", err)
+	}
+
+	if err := s.store.InsertAuditLog(ctx, uuid.NewString(), userID, "project.db.delete", "project:"+projectID, map[string]any{
+		"attachment": attachmentID,
+	}); err != nil {
+		return Project{}, err
+	}
+
+	return project, nil
 }
 
 func (s *Service) recordFromInput(input WebProjectInput, existingSlug string) (store.ProjectRecord, error) {
@@ -419,6 +601,10 @@ func (s *Service) projectFromRecord(ctx context.Context, record store.ProjectRec
 	if err != nil {
 		return Project{}, err
 	}
+	attachments, err := s.loadAttachments(ctx, record.ID)
+	if err != nil {
+		return Project{}, err
+	}
 
 	status := "not deployed"
 	if s.docker != nil {
@@ -435,6 +621,7 @@ func (s *Service) projectFromRecord(ctx context.Context, record store.ProjectRec
 		ID:                record.ID,
 		Name:              record.Name,
 		Slug:              record.Slug,
+		WebhookSecret:     record.WebhookSecret,
 		ImageRef:          record.ImageRef,
 		Subdomain:         record.Subdomain,
 		FullDomain:        fqdn(settings.RootDomain, record.Subdomain),
@@ -446,6 +633,7 @@ func (s *Service) projectFromRecord(ctx context.Context, record store.ProjectRec
 		CreatedAt:         record.CreatedAt,
 		UpdatedAt:         record.UpdatedAt,
 		Status:            status,
+		DBAttachments:     attachments,
 	}, nil
 }
 
@@ -470,7 +658,7 @@ func (s *Service) applyProject(ctx context.Context, project Project, settings Se
 		if _, err := s.docker.RecreateContainer(ctx, dockerx.ContainerSpec{
 			Name:          project.ContainerName,
 			Image:         project.ImageRef,
-			Env:           project.Env,
+			Env:           project.runtimeEnv(),
 			Labels:        labels,
 			Network:       managedNetworkName,
 			ExposedPorts:  []string{strconv.Itoa(project.InternalPort)},
@@ -489,6 +677,17 @@ func (s *Service) applyProject(ctx context.Context, project Project, settings Se
 	}
 
 	return nil
+}
+
+func (p Project) runtimeEnv() map[string]string {
+	values := make(map[string]string, len(p.Env)+len(p.DBAttachments))
+	for key, value := range p.Env {
+		values[key] = value
+	}
+	for _, attachment := range p.DBAttachments {
+		values[attachment.EnvVarName] = attachment.ConnectionHint
+	}
+	return values
 }
 
 func (s *Service) reconcileCaddy(ctx context.Context) error {
@@ -623,6 +822,34 @@ func (s *Service) decodeSecret(value string) (string, error) {
 	return s.secrets.DecryptString(strings.TrimPrefix(value, "enc:"))
 }
 
+func (s *Service) loadAttachments(ctx context.Context, projectID string) ([]DBAttachment, error) {
+	if s.db == nil {
+		return nil, nil
+	}
+
+	attachments, err := s.db.ListAttachments(ctx, projectID)
+	if err != nil {
+		return nil, err
+	}
+
+	result := make([]DBAttachment, 0, len(attachments))
+	for _, attachment := range attachments {
+		result = append(result, DBAttachment{
+			ID:             attachment.ID,
+			Engine:         attachment.Engine,
+			DBName:         attachment.DBName,
+			DBUser:         attachment.DBUser,
+			EnvVarName:     attachment.EnvVarName,
+			Host:           attachment.Host,
+			Port:           attachment.Port,
+			Password:       attachment.Password,
+			ConnectionHint: connectionString(attachment),
+		})
+	}
+
+	return result, nil
+}
+
 func parseEnvText(raw string) map[string]string {
 	values := map[string]string{}
 	lines := strings.Split(raw, "\n")
@@ -683,4 +910,13 @@ func HostFromURL(raw string) string {
 		return ""
 	}
 	return parsed.Hostname()
+}
+
+func connectionString(attachment dbengines.Attachment) string {
+	switch attachment.Engine {
+	case "mariadb":
+		return fmt.Sprintf("%s:%s@tcp(%s:%d)/%s?parseTime=true", attachment.DBUser, attachment.Password, attachment.Host, attachment.Port, attachment.DBName)
+	default:
+		return fmt.Sprintf("postgres://%s:%s@%s:%d/%s?sslmode=disable", attachment.DBUser, attachment.Password, attachment.Host, attachment.Port, attachment.DBName)
+	}
 }

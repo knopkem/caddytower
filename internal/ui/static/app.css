@@ -77,6 +77,13 @@ h1 {
   box-shadow: 0 16px 32px var(--shadow);
 }
 
+.subcard {
+  padding: 16px;
+  border: 1px solid var(--panel-border);
+  border-radius: 14px;
+  background: rgba(11, 16, 32, 0.55);
+}
+
 .card ul,
 .card ol {
   margin: 0;
@@ -150,6 +157,15 @@ h1 {
   color: var(--text);
   resize: vertical;
   min-height: 120px;
+}
+
+.field select {
+  width: 100%;
+  padding: 12px 14px;
+  border: 1px solid var(--panel-border);
+  border-radius: 12px;
+  background: rgba(11, 16, 32, 0.8);
+  color: var(--text);
 }
 
 .checkbox {
@@ -257,6 +273,12 @@ th {
     ui-monospace, SFMono-Regular, SF Mono, Menlo, Consolas, "Liberation Mono",
     monospace;
   word-break: break-word;
+}
+
+details summary {
+  cursor: pointer;
+  color: var(--muted);
+  margin-bottom: 10px;
 }
 
 @media (max-width: 640px) {

@@ -2,6 +2,9 @@ package server
 
 import (
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -9,7 +12,10 @@ import (
 	"time"
 
 	"caddytower/internal/auth"
+	"caddytower/internal/caddyadmin"
 	"caddytower/internal/config"
+	"caddytower/internal/dockerx"
+	"caddytower/internal/projects"
 	"caddytower/internal/store"
 	"caddytower/internal/ui"
 	"caddytower/internal/version"
@@ -125,6 +131,54 @@ func TestRootRedirectsToLoginAfterBootstrap(t *testing.T) {
 	}
 }
 
+func TestDeployWebhookRedeploysProject(t *testing.T) {
+	t.Parallel()
+
+	webUI, err := ui.New()
+	if err != nil {
+		t.Fatalf("ui.New() error = %v", err)
+	}
+
+	stateStore := openServerTestStore(t)
+	projectService := projects.New(config.Config{
+		HTTPAddr:      ":8080",
+		PublicBaseURL: "http://localhost:8080",
+		DataDir:       t.TempDir(),
+		CaddyAdminURL: "http://shared-caddy:2019",
+		RootDomain:    "example.com",
+	}, stateStore, nil, &serverTestDocker{}, &serverTestCaddy{}, newNoopLogger())
+
+	project, err := projectService.CreateWebProject(context.Background(), projects.WebProjectInput{
+		Name:         "Books",
+		Slug:         "books",
+		ImageRef:     "ghcr.io/example/books:latest",
+		Subdomain:    "books",
+		InternalPort: 3000,
+	}, "")
+	if err != nil {
+		t.Fatalf("CreateWebProject() error = %v", err)
+	}
+
+	srv := New(config.Config{
+		HTTPAddr:      ":8080",
+		PublicBaseURL: "http://localhost:8080",
+		DataDir:       t.TempDir(),
+		CaddyAdminURL: "http://shared-caddy:2019",
+		RootDomain:    "example.com",
+	}, webUI, newNoopLogger(), version.Info{Version: "test"}, stateStore, nil, projectService)
+
+	body := `{"ref":"refs/heads/main"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/webhooks/deploy/books", strings.NewReader(body))
+	req.Header.Set("X-Signature", testWebhookSignature(project.WebhookSecret, []byte(body)))
+	rec := httptest.NewRecorder()
+
+	srv.Router().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusAccepted)
+	}
+}
+
 func openServerTestStore(t *testing.T) *store.Store {
 	t.Helper()
 
@@ -143,4 +197,30 @@ func openServerTestStore(t *testing.T) *store.Store {
 	})
 
 	return stateStore
+}
+
+type serverTestDocker struct{}
+
+func (serverTestDocker) PullImage(context.Context, string) error { return nil }
+func (serverTestDocker) RecreateContainer(_ context.Context, spec dockerx.ContainerSpec) (dockerx.ContainerInspect, error) {
+	return dockerx.ContainerInspect{Name: spec.Name, Running: true}, nil
+}
+func (serverTestDocker) InspectContainer(context.Context, string) (dockerx.ContainerInspect, error) {
+	return dockerx.ContainerInspect{Running: true}, nil
+}
+func (serverTestDocker) ListContainersByLabel(context.Context, string, string) ([]dockerx.ContainerSummary, error) {
+	return nil, nil
+}
+func (serverTestDocker) RemoveContainer(context.Context, string) error { return nil }
+
+type serverTestCaddy struct{}
+
+func (serverTestCaddy) ReconcileManagedRoutes(context.Context, []caddyadmin.HTTPRoute, []string) (bool, error) {
+	return true, nil
+}
+
+func testWebhookSignature(secret string, payload []byte) string {
+	mac := hmac.New(sha256.New, []byte(secret))
+	mac.Write(payload)
+	return fmt.Sprintf("sha256=%x", mac.Sum(nil))
 }

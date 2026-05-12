@@ -9,6 +9,7 @@ import (
 	"caddytower/internal/caddyadmin"
 	"caddytower/internal/cloudflare"
 	"caddytower/internal/config"
+	"caddytower/internal/dbengines"
 	"caddytower/internal/dockerx"
 	"caddytower/internal/secrets"
 	"caddytower/internal/store"
@@ -119,6 +120,120 @@ func TestDeleteProjectRemovesManagedResources(t *testing.T) {
 	}
 }
 
+func TestAttachDatabaseAddsAttachmentAndRuntimeEnv(t *testing.T) {
+	t.Parallel()
+
+	stateStore := openProjectsStore(t)
+	secretSvc, err := secrets.NewOptionalFromBase64("AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=")
+	if err != nil {
+		t.Fatalf("NewOptionalFromBase64() error = %v", err)
+	}
+
+	docker := &fakeDocker{}
+	caddy := &fakeCaddy{}
+	svc := New(config.Config{RootDomain: "example.com"}, stateStore, secretSvc, docker, caddy, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	svc.db = &fakeDBService{}
+
+	project, err := svc.CreateWebProject(context.Background(), WebProjectInput{
+		Name:         "Books",
+		Slug:         "books",
+		ImageRef:     "ghcr.io/example/books:latest",
+		Subdomain:    "books",
+		InternalPort: 3000,
+	}, "")
+	if err != nil {
+		t.Fatalf("CreateWebProject() error = %v", err)
+	}
+
+	project, err = svc.AttachDatabase(context.Background(), DatabaseAttachmentInput{
+		ProjectID:  project.ID,
+		Engine:     "pg",
+		EnvVarName: "DATABASE_URL",
+	}, "")
+	if err != nil {
+		t.Fatalf("AttachDatabase() error = %v", err)
+	}
+
+	if len(project.DBAttachments) != 1 {
+		t.Fatalf("attachments = %#v", project.DBAttachments)
+	}
+	if project.DBAttachments[0].EnvVarName != "DATABASE_URL" || project.DBAttachments[0].ConnectionHint == "" {
+		t.Fatalf("attachment = %#v", project.DBAttachments[0])
+	}
+	if docker.recreateCount != 2 {
+		t.Fatalf("recreateCount = %d", docker.recreateCount)
+	}
+}
+
+func TestDeleteProjectDropsAttachedDatabases(t *testing.T) {
+	t.Parallel()
+
+	stateStore := openProjectsStore(t)
+	docker := &fakeDocker{}
+	caddy := &fakeCaddy{}
+	fakeDB := &fakeDBService{}
+	svc := New(config.Config{RootDomain: "example.com"}, stateStore, nil, docker, caddy, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	svc.db = fakeDB
+
+	project, err := svc.CreateWebProject(context.Background(), WebProjectInput{
+		Name:         "Books",
+		Slug:         "books",
+		ImageRef:     "ghcr.io/example/books:latest",
+		Subdomain:    "books",
+		InternalPort: 3000,
+	}, "")
+	if err != nil {
+		t.Fatalf("CreateWebProject() error = %v", err)
+	}
+
+	if _, err := svc.AttachDatabase(context.Background(), DatabaseAttachmentInput{
+		ProjectID: project.ID,
+		Engine:    "pg",
+	}, ""); err != nil {
+		t.Fatalf("AttachDatabase() error = %v", err)
+	}
+
+	if err := svc.DeleteProject(context.Background(), project.ID, ""); err != nil {
+		t.Fatalf("DeleteProject() error = %v", err)
+	}
+
+	if len(fakeDB.deleted) != 1 {
+		t.Fatalf("deleted attachments = %#v", fakeDB.deleted)
+	}
+}
+
+func TestRedeployProjectByWebhookUsesSlug(t *testing.T) {
+	t.Parallel()
+
+	stateStore := openProjectsStore(t)
+	docker := &fakeDocker{}
+	caddy := &fakeCaddy{}
+	svc := New(config.Config{RootDomain: "example.com"}, stateStore, nil, docker, caddy, slog.New(slog.NewTextHandler(io.Discard, nil)))
+
+	project, err := svc.CreateWebProject(context.Background(), WebProjectInput{
+		Name:         "Books",
+		Slug:         "books",
+		ImageRef:     "ghcr.io/example/books:latest",
+		Subdomain:    "books",
+		InternalPort: 3000,
+	}, "")
+	if err != nil {
+		t.Fatalf("CreateWebProject() error = %v", err)
+	}
+
+	redeployed, err := svc.RedeployProjectByWebhook(context.Background(), "books")
+	if err != nil {
+		t.Fatalf("RedeployProjectByWebhook() error = %v", err)
+	}
+
+	if redeployed.ID != project.ID {
+		t.Fatalf("redeployed.ID = %q, want %q", redeployed.ID, project.ID)
+	}
+	if docker.recreateCount != 2 {
+		t.Fatalf("recreateCount = %d", docker.recreateCount)
+	}
+}
+
 func openProjectsStore(t *testing.T) *store.Store {
 	t.Helper()
 
@@ -193,5 +308,73 @@ func (f *fakeCloudflare) UpsertCNAME(context.Context, string, string, string, bo
 }
 func (f *fakeCloudflare) DeleteCNAME(context.Context, string, string) error {
 	f.deleteCount++
+	return nil
+}
+
+type fakeDBService struct {
+	nextID      int64
+	attachments []dbengines.Attachment
+	deleted     []int64
+}
+
+func (f *fakeDBService) AttachDatabase(_ context.Context, projectID, _ string, engine, envVarName string) (dbengines.Attachment, error) {
+	f.nextID++
+	attachment := dbengines.Attachment{
+		ID:         f.nextID,
+		ProjectID:  projectID,
+		Engine:     engine,
+		DBName:     "db_" + projectID,
+		DBUser:     "user_" + projectID,
+		Password:   "secret",
+		EnvVarName: envVarName,
+	}
+	switch engine {
+	case "mariadb":
+		attachment.Host = "caddytower-mariadb"
+		attachment.Port = 3306
+	default:
+		attachment.Host = "caddytower-postgres"
+		attachment.Port = 5432
+	}
+	f.attachments = append(f.attachments, attachment)
+	return attachment, nil
+}
+
+func (f *fakeDBService) ListAttachments(_ context.Context, projectID string) ([]dbengines.Attachment, error) {
+	var attachments []dbengines.Attachment
+	for _, attachment := range f.attachments {
+		if attachment.ProjectID == projectID {
+			attachments = append(attachments, attachment)
+		}
+	}
+	return attachments, nil
+}
+
+func (f *fakeDBService) RotateAttachmentPassword(_ context.Context, attachmentID int64) (dbengines.Attachment, error) {
+	for idx, attachment := range f.attachments {
+		if attachment.ID == attachmentID {
+			attachment.Password = "rotated"
+			f.attachments[idx] = attachment
+			return attachment, nil
+		}
+	}
+	return dbengines.Attachment{}, store.ErrNotFound
+}
+
+func (f *fakeDBService) DeleteAttachment(_ context.Context, attachmentID int64) error {
+	filtered := f.attachments[:0]
+	found := false
+	for _, attachment := range f.attachments {
+		if attachment.ID == attachmentID {
+			found = true
+			continue
+		}
+		filtered = append(filtered, attachment)
+	}
+	if !found {
+		return store.ErrNotFound
+	}
+	f.attachments = filtered
+	f.deleted = append(f.deleted, attachmentID)
 	return nil
 }

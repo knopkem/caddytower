@@ -219,6 +219,43 @@ func (s *Store) GetProject(ctx context.Context, projectID string) (ProjectRecord
 	return project, nil
 }
 
+func (s *Store) GetProjectBySlug(ctx context.Context, slug string) (ProjectRecord, error) {
+	var project ProjectRecord
+	var watchtowerEnabled int
+	err := s.db.QueryRowContext(ctx, `
+		SELECT id, slug, name, type, image_ref, internal_port, subdomain, watchtower_enabled, webhook_secret, created_at, updated_at
+		FROM projects
+		WHERE slug = ?
+	`, slug).Scan(
+		&project.ID,
+		&project.Slug,
+		&project.Name,
+		&project.Type,
+		&project.ImageRef,
+		&project.InternalPort,
+		&project.Subdomain,
+		&watchtowerEnabled,
+		&project.WebhookSecret,
+		&project.CreatedAt,
+		&project.UpdatedAt,
+	)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return ProjectRecord{}, ErrNotFound
+		}
+		return ProjectRecord{}, fmt.Errorf("get project by slug %s: %w", slug, err)
+	}
+
+	project.WatchtowerEnabled = watchtowerEnabled == 1
+	env, err := s.getProjectEnv(ctx, project.ID)
+	if err != nil {
+		return ProjectRecord{}, err
+	}
+	project.Env = env
+
+	return project, nil
+}
+
 func (s *Store) ListProjects(ctx context.Context) ([]ProjectRecord, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT id, slug, name, type, image_ref, internal_port, subdomain, watchtower_enabled, webhook_secret, created_at, updated_at

@@ -66,7 +66,12 @@
             <div><dt>Container</dt><dd>{{.ProjectMeta.ContainerName}}</dd></div>
             <div><dt>Status</dt><dd>{{.ProjectMeta.Status}}</dd></div>
             <div><dt>Image</dt><dd>{{.ProjectMeta.ImageRef}}</dd></div>
+            <div><dt>Deploy webhook</dt><dd class="mono">{{.WebhookURL}}</dd></div>
           </dl>
+          <details>
+            <summary>Webhook signing secret</summary>
+            <p class="mono">{{.WebhookSecret}}</p>
+          </details>
           <div class="actions stacked">
             <form method="post" action="/projects/{{.Project.ID}}/deploy">
               <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
@@ -77,6 +82,62 @@
               <button type="submit" class="danger">Delete project</button>
             </form>
           </div>
+        </article>
+      </section>
+
+      <section class="grid">
+        <article class="card">
+          <h2>Attach shared database</h2>
+          <form method="post" action="/projects/{{.Project.ID}}/databases" class="stack">
+            <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+            <label class="field">
+              <span>Engine</span>
+              <select name="engine">
+                <option value="pg" {{if eq .AttachmentForm.Engine "pg"}}selected{{end}}>Postgres</option>
+                <option value="mariadb" {{if eq .AttachmentForm.Engine "mariadb"}}selected{{end}}>MariaDB</option>
+              </select>
+            </label>
+            <label class="field">
+              <span>Env var name</span>
+              <input type="text" name="env_var_name" value="{{.AttachmentForm.EnvVarName}}" placeholder="DATABASE_URL or MYSQL_URL">
+            </label>
+            <button type="submit">Attach database</button>
+          </form>
+        </article>
+
+        <article class="card">
+          <h2>Database attachments</h2>
+          {{if .Attachments}}
+          <div class="stack">
+            {{range .Attachments}}
+            <article class="subcard">
+              <dl class="kv">
+                <div><dt>Engine</dt><dd>{{.Engine}}</dd></div>
+                <div><dt>Env var</dt><dd>{{.EnvVarName}}</dd></div>
+                <div><dt>Database</dt><dd>{{.DBName}}</dd></div>
+                <div><dt>User</dt><dd>{{.DBUser}}</dd></div>
+                <div><dt>Host</dt><dd>{{.Host}}:{{.Port}}</dd></div>
+              </dl>
+              <details class="details">
+                <summary>Connection string</summary>
+                <p class="mono">{{.ConnectionHint}}</p>
+              </details>
+              <div class="actions">
+                <form method="post" action="/projects/{{$.Project.ID}}/databases/{{.ID}}/rotate">
+                  <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+                  <button type="submit" class="secondary">Rotate password</button>
+                </form>
+                <form method="post" action="/projects/{{$.Project.ID}}/databases/{{.ID}}/delete">
+                  <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+                  <button type="submit" class="danger">Detach database</button>
+                </form>
+              </div>
+            </article>
+            {{end}}
+          </div>
+          {{else}}
+          <p class="muted">No attached shared databases yet.</p>
+          {{end}}
         </article>
       </section>
     </main>
