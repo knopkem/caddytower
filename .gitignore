@@ -1,6 +1,8 @@
 .DS_Store
 .env
 .env.local
+/caddytower
+/caddytower.exe
 bin/
 dist/
 var/
