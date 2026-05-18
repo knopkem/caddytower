@@ -568,6 +568,9 @@ func TestSettingsPageRendersDeploymentSetup(t *testing.T) {
 	if !strings.Contains(body, "Deployment settings") || !strings.Contains(body, `placeholder="example.com"`) || !strings.Contains(body, `placeholder="server.example.com or 203.0.113.10"`) {
 		t.Fatalf("settings page missing deployment setup content: %q", body)
 	}
+	if !strings.Contains(body, "Shared Caddy diagnostics") || !strings.Contains(body, "Shared Caddy diagnostics are unavailable because the admin client is not configured.") {
+		t.Fatalf("settings page missing caddy diagnostics content: %q", body)
+	}
 	if strings.Contains(body, "Adopt existing") || strings.Contains(body, "adoption") {
 		t.Fatalf("settings page should no longer include adoption ui: %q", body)
 	}
@@ -1415,6 +1418,9 @@ func (serverTestDocker) Exec(context.Context, string, []string, []string, io.Wri
 type serverTestCaddy struct{}
 
 func (serverTestCaddy) Ping(context.Context) error { return nil }
+func (serverTestCaddy) GetConfig(context.Context) (json.RawMessage, error) {
+	return json.RawMessage(`{}`), nil
+}
 func (serverTestCaddy) ReconcileManagedRoutes(context.Context, []caddyadmin.HTTPRoute, []string) (bool, error) {
 	return true, nil
 }

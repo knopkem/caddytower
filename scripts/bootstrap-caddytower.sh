@@ -33,6 +33,7 @@ fi
 caddytower_copy_if_missing "${COMPOSE_SRC}" "${COMPOSE_DEST}" || true
 caddytower_copy_if_missing "${CADDYFILE_SRC}" "${CADDYFILE_DEST}" || true
 caddytower_ensure_watchtower_api_version "${COMPOSE_DEST}"
+caddytower_ensure_controller_docker_group "${COMPOSE_DEST}"
 
 caddytower_generate_master_key_if_needed "${ENV_DEST}"
 caddytower_compose_up "${TARGET_DIR}"

@@ -116,6 +116,89 @@
         <article class="card">
           <div class="card-header">
             <div class="card-title">
+              <h2>Shared Caddy diagnostics</h2>
+              <p>Read-only visibility into the routes CaddyTower expects to manage and the live config exposed by the shared Caddy admin API.</p>
+            </div>
+            <details class="help">
+              <summary>Help</summary>
+              <div class="help-body">
+                <p>This panel is for debugging only. CaddyTower compares the live shared Caddy config with the routes it expects to own, but it does not let you edit the raw config here.</p>
+              </div>
+            </details>
+          </div>
+          {{if .CaddyDiagnostics.Available}}
+          <dl class="stats">
+            <div><dt>Admin API</dt><dd class="mono">{{.Config.CaddyAdminURL}}</dd></div>
+            <div><dt>Managed routes</dt><dd>{{.CaddyDiagnostics.ManagedRouteCount}}</dd></div>
+            <div><dt>Healthy routes</dt><dd>{{.CaddyDiagnostics.HealthyRouteCount}}</dd></div>
+            <div><dt>Drift detected</dt><dd>{{.CaddyDiagnostics.DriftCount}}</dd></div>
+            <div><dt>Live reverse-proxy routes</dt><dd>{{.CaddyDiagnostics.LiveRouteCount}}</dd></div>
+          </dl>
+          <div class="section-spacer">
+            <span class="status-pill is-{{if .CaddyDiagnostics.Status}}{{.CaddyDiagnostics.Status}}{{else}}warning{{end}}">
+              {{if .CaddyDiagnostics.Status}}{{.CaddyDiagnostics.Status}}{{else}}warning{{end}}
+            </span>
+          </div>
+          <p class="section-spacer"><strong>{{.CaddyDiagnostics.Summary}}</strong></p>
+          {{if .CaddyDiagnostics.Detail}}<p class="field-hint">{{.CaddyDiagnostics.Detail}}</p>{{end}}
+
+          {{if .CaddyDiagnostics.Routes}}
+          <div class="stack section-spacer">
+            {{range .CaddyDiagnostics.Routes}}
+            <article class="subcard">
+              <div class="card-header">
+                <div class="card-title">
+                  <h3 class="mono">{{.Host}}</h3>
+                  <p>{{.Detail}}</p>
+                </div>
+                <span class="status-pill is-{{.Status}}">{{.Status}}</span>
+              </div>
+              <dl class="kv compact-kv">
+                <div><dt>Expected upstream</dt><dd class="mono">{{.ExpectedUpstreamsSummary}}</dd></div>
+                <div><dt>Live upstream</dt><dd class="mono">{{if .LiveUpstreamsSummary}}{{.LiveUpstreamsSummary}}{{else}}missing{{end}}</dd></div>
+              </dl>
+            </article>
+            {{end}}
+          </div>
+          {{else}}
+          <div class="empty-state section-spacer">
+            <p><strong>No managed routes to compare yet.</strong></p>
+            <p>Once the root domain is configured or web projects are added, CaddyTower-managed routes will appear here.</p>
+          </div>
+          {{end}}
+
+          <details class="help section-spacer">
+            <summary>Raw live Caddy config</summary>
+            <div class="help-body">
+              <p>This is the current JSON returned by the shared Caddy admin API. Use it for troubleshooting only.</p>
+            </div>
+            {{if .CaddyDiagnostics.RawConfigAvailable}}
+            <pre class="log-output">{{.CaddyDiagnostics.RawConfig}}</pre>
+            {{else if .CaddyDiagnostics.RawConfigError}}
+            <div class="empty-state">
+              <p><strong>Raw config unavailable.</strong></p>
+              <p>{{.CaddyDiagnostics.RawConfigError}}</p>
+            </div>
+            {{else}}
+            <div class="empty-state">
+              <p><strong>Raw config unavailable.</strong></p>
+              <p>The shared Caddy admin API did not return any JSON yet.</p>
+            </div>
+            {{end}}
+          </details>
+          {{else}}
+          <div class="empty-state">
+            <p><strong>{{.CaddyDiagnostics.Summary}}</strong></p>
+            <p>{{.CaddyDiagnostics.Detail}}</p>
+          </div>
+          {{end}}
+        </article>
+      </section>
+
+      <section class="section">
+        <article class="card">
+          <div class="card-header">
+            <div class="card-title">
               <h2>GitHub import</h2>
               <p>GitHub App connection status and setup guidance for the live repo-import flow.</p>
             </div>

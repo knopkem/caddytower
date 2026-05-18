@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/x509"
+	"encoding/json"
 	"encoding/pem"
 	"errors"
 	"io"
@@ -197,6 +198,75 @@ func TestDashboardFlagsBrokenRequirements(t *testing.T) {
 	}
 	if dashboard.Requirements.Checks[2].Summary != "Watchtower could not be checked because Docker is unavailable." {
 		t.Fatalf("watchtower summary = %q", dashboard.Requirements.Checks[2].Summary)
+	}
+}
+
+func TestDashboardIncludesSharedCaddyDiagnostics(t *testing.T) {
+	t.Parallel()
+
+	stateStore := openProjectsStore(t)
+	docker := &fakeDocker{
+		inspectByName: map[string]dockerx.ContainerInspect{
+			"watchtower": {
+				Name:    "watchtower",
+				Running: true,
+				Env:     []string{"DOCKER_API_VERSION=1.44"},
+			},
+		},
+	}
+	caddy := &fakeCaddy{
+		rawConfig: []byte(`{
+			"apps": {
+				"http": {
+					"servers": {
+						"srv0": {
+							"routes": [
+								{"match":[{"host":["caddytower.example.com"]}],"handle":[{"handler":"reverse_proxy","upstreams":[{"dial":"caddytower:8080"}]}],"terminal":true},
+								{"match":[{"host":["demo.example.com"]}],"handle":[{"handler":"reverse_proxy","upstreams":[{"dial":"wrong:3000"}]}],"terminal":true},
+								{"match":[{"host":["legacy.example.com"]}],"handle":[{"handler":"reverse_proxy","upstreams":[{"dial":"legacy:80"}]}],"terminal":true}
+							]
+						}
+					}
+				}
+			}
+		}`),
+	}
+	svc := New(config.Config{RootDomain: "example.com", CaddyAdminURL: "http://shared-caddy:2019", HTTPAddr: ":8080"}, stateStore, nil, docker, caddy, slog.New(slog.NewTextHandler(io.Discard, nil)))
+
+	project, err := svc.CreateWebProject(context.Background(), WebProjectInput{
+		Name:         "Demo",
+		Slug:         "demo",
+		ImageRef:     "ghcr.io/example/demo:latest",
+		Subdomain:    "demo",
+		InternalPort: 3000,
+		SkipDeploy:   true,
+	}, "")
+	if err != nil {
+		t.Fatalf("CreateWebProject() error = %v", err)
+	}
+	if project.FullDomain != "demo.example.com" {
+		t.Fatalf("project.FullDomain = %q", project.FullDomain)
+	}
+
+	dashboard, err := svc.Dashboard(context.Background())
+	if err != nil {
+		t.Fatalf("Dashboard() error = %v", err)
+	}
+
+	if dashboard.Caddy.Status != "warning" || dashboard.Caddy.ManagedRouteCount != 2 || dashboard.Caddy.DriftCount != 1 || dashboard.Caddy.LiveRouteCount != 3 {
+		t.Fatalf("unexpected caddy diagnostics: %#v", dashboard.Caddy)
+	}
+	if len(dashboard.Caddy.Routes) != 2 {
+		t.Fatalf("route diagnostics = %#v", dashboard.Caddy.Routes)
+	}
+	if dashboard.Caddy.Routes[0].Host != "caddytower.example.com" || dashboard.Caddy.Routes[0].Status != "ok" {
+		t.Fatalf("admin route diagnostics = %#v", dashboard.Caddy.Routes[0])
+	}
+	if dashboard.Caddy.Routes[1].Host != "demo.example.com" || dashboard.Caddy.Routes[1].Status != "warning" {
+		t.Fatalf("project route diagnostics = %#v", dashboard.Caddy.Routes[1])
+	}
+	if !dashboard.Caddy.RawConfigAvailable || !strings.Contains(dashboard.Caddy.RawConfig, "\"legacy.example.com\"") {
+		t.Fatalf("raw config = %q", dashboard.Caddy.RawConfig)
 	}
 }
 
@@ -821,10 +891,19 @@ func (f *fakeDocker) Exec(context.Context, string, []string, []string, io.Writer
 type fakeCaddy struct {
 	managedHosts []string
 	pingErr      error
+	rawConfig    json.RawMessage
+	getConfigErr error
 }
 
 func (f *fakeCaddy) Ping(context.Context) error {
 	return f.pingErr
+}
+
+func (f *fakeCaddy) GetConfig(context.Context) (json.RawMessage, error) {
+	if f.getConfigErr != nil {
+		return nil, f.getConfigErr
+	}
+	return append(json.RawMessage(nil), f.rawConfig...), nil
 }
 
 func (f *fakeCaddy) ReconcileManagedRoutes(_ context.Context, routes []caddyadmin.HTTPRoute, managedHosts []string) (bool, error) {

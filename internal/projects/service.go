@@ -1,7 +1,9 @@
 package projects
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
@@ -63,6 +65,7 @@ type dockerService interface {
 
 type caddyService interface {
 	Ping(context.Context) error
+	GetConfig(context.Context) (json.RawMessage, error)
 	ReconcileManagedRoutes(context.Context, []caddyadmin.HTTPRoute, []string) (bool, error)
 }
 
@@ -196,6 +199,7 @@ type Dashboard struct {
 	Settings     Settings
 	Projects     []Project
 	Requirements RequirementsStatus
+	Caddy        CaddyDiagnostics
 }
 
 type RequirementsStatus struct {
@@ -211,6 +215,29 @@ type RequirementCheck struct {
 	Status  string
 	Summary string
 	Detail  string
+}
+
+type CaddyDiagnostics struct {
+	Available          bool
+	Status             string
+	Summary            string
+	Detail             string
+	ManagedRouteCount  int
+	HealthyRouteCount  int
+	DriftCount         int
+	LiveRouteCount     int
+	Routes             []CaddyRouteDiagnostic
+	RawConfig          string
+	RawConfigAvailable bool
+	RawConfigError     string
+}
+
+type CaddyRouteDiagnostic struct {
+	Host              string
+	ExpectedUpstreams []string
+	LiveUpstreams     []string
+	Status            string
+	Detail            string
 }
 
 type AuditLogEntry struct {
@@ -374,6 +401,7 @@ func (s *Service) Dashboard(ctx context.Context) (Dashboard, error) {
 		Settings:     settings,
 		Projects:     projects,
 		Requirements: s.requirementsStatus(ctx, projects),
+		Caddy:        s.caddyDiagnostics(ctx, settings, projects),
 	}, nil
 }
 
@@ -416,7 +444,7 @@ func (s *Service) dockerRequirement(ctx context.Context) RequirementCheck {
 	defer cancel()
 	if err := s.docker.Ping(checkCtx); err != nil {
 		check.Summary = "CaddyTower cannot reach Docker right now."
-		check.Detail = err.Error()
+		check.Detail = dockerRequirementDetail(err)
 		return check
 	}
 
@@ -513,6 +541,175 @@ func (s *Service) watchtowerRequirement(ctx context.Context, projectList []Proje
 	return check
 }
 
+func (s *Service) caddyDiagnostics(ctx context.Context, settings Settings, projectList []Project) CaddyDiagnostics {
+	diagnostics := CaddyDiagnostics{
+		Available: false,
+		Status:    "error",
+	}
+	adminURL := strings.TrimSpace(s.cfg.CaddyAdminURL)
+	if adminURL == "" {
+		diagnostics.Summary = "Shared Caddy diagnostics are unavailable because the admin URL is not configured."
+		diagnostics.Detail = "Set CADDYTOWER_CADDY_ADMIN_URL so CaddyTower can inspect and reconcile shared routes."
+		return diagnostics
+	}
+	if s.caddy == nil {
+		diagnostics.Summary = "Shared Caddy diagnostics are unavailable because the admin client is not configured."
+		diagnostics.Detail = "CaddyTower needs the shared Caddy admin API to inspect live routes."
+		return diagnostics
+	}
+
+	expectedRoutes := expectedManagedRoutes(settings, projectList, s.cfg.HTTPAddr)
+	diagnostics.ManagedRouteCount = len(expectedRoutes)
+
+	checkCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	rawConfig, err := s.caddy.GetConfig(checkCtx)
+	if err != nil {
+		diagnostics.Summary = "The live shared Caddy config could not be loaded."
+		diagnostics.Detail = err.Error()
+		return diagnostics
+	}
+	diagnostics.Available = true
+
+	if pretty, err := prettyCaddyConfig(rawConfig); err != nil {
+		diagnostics.RawConfigError = err.Error()
+	} else if pretty != "" {
+		diagnostics.RawConfig = pretty
+		diagnostics.RawConfigAvailable = true
+	}
+
+	liveRoutes, err := caddyadmin.ExtractHTTPRoutes(rawConfig)
+	if err != nil {
+		diagnostics.Summary = "The live shared Caddy config was loaded, but its HTTP routes could not be parsed."
+		diagnostics.Detail = err.Error()
+		return diagnostics
+	}
+	diagnostics.LiveRouteCount = len(liveRoutes)
+
+	liveByHost := map[string][]string{}
+	for _, route := range liveRoutes {
+		host := strings.TrimSpace(route.Host)
+		if host == "" {
+			continue
+		}
+		liveByHost[host] = sortedValues(route.Upstreams)
+	}
+
+	for _, route := range expectedRoutes {
+		expectedUpstreams := sortedValues(route.Upstreams)
+		item := CaddyRouteDiagnostic{
+			Host:              route.Host,
+			ExpectedUpstreams: expectedUpstreams,
+			Status:            "warning",
+		}
+		liveUpstreams, ok := liveByHost[route.Host]
+		if !ok {
+			item.Detail = "Missing from the live shared Caddy config."
+			diagnostics.DriftCount++
+			diagnostics.Routes = append(diagnostics.Routes, item)
+			continue
+		}
+
+		item.LiveUpstreams = liveUpstreams
+		if !sameStrings(expectedUpstreams, liveUpstreams) {
+			item.Detail = "The live upstream target differs from what CaddyTower expects."
+			diagnostics.DriftCount++
+			diagnostics.Routes = append(diagnostics.Routes, item)
+			continue
+		}
+
+		item.Status = "ok"
+		item.Detail = "Live route matches the expected upstream."
+		diagnostics.HealthyRouteCount++
+		diagnostics.Routes = append(diagnostics.Routes, item)
+	}
+
+	switch {
+	case diagnostics.ManagedRouteCount == 0:
+		diagnostics.Status = "warning"
+		diagnostics.Summary = "No CaddyTower-managed routes are expected yet."
+		diagnostics.Detail = "Finish the root-domain setup or add a web project to populate managed shared-Caddy routes."
+	case diagnostics.DriftCount > 0:
+		diagnostics.Status = "warning"
+		diagnostics.Summary = fmt.Sprintf("%d of %d managed route%s need attention.", diagnostics.DriftCount, diagnostics.ManagedRouteCount, plural(diagnostics.ManagedRouteCount))
+		diagnostics.Detail = "Expected routes are listed below so you can compare them with the live shared Caddy config."
+	default:
+		diagnostics.Status = "ok"
+		diagnostics.Summary = fmt.Sprintf("Live shared Caddy config matches all %d managed route%s.", diagnostics.ManagedRouteCount, plural(diagnostics.ManagedRouteCount))
+		diagnostics.Detail = "Use the raw config viewer below only for troubleshooting."
+	}
+
+	return diagnostics
+}
+
+func expectedManagedRoutes(settings Settings, projectList []Project, httpAddr string) []caddyadmin.HTTPRoute {
+	routes := make([]caddyadmin.HTTPRoute, 0, len(projectList)+1)
+	if adminHost := adminHostname(settings.RootDomain); adminHost != "" {
+		routes = append(routes, caddyadmin.HTTPRoute{
+			Host:      adminHost,
+			Upstreams: []string{controllerContainerName + ":" + controllerPort(httpAddr)},
+		})
+	}
+
+	for _, project := range projectList {
+		if project.Type != projectTypeWeb {
+			continue
+		}
+		upstream := project.ContainerName + ":" + strconv.Itoa(project.InternalPort)
+		if host := strings.TrimSpace(project.FullDomain); host != "" {
+			routes = append(routes, caddyadmin.HTTPRoute{
+				Host:      host,
+				Upstreams: []string{upstream},
+			})
+		}
+		for _, domain := range project.CustomDomains {
+			host := strings.TrimSpace(domain.Hostname)
+			if host == "" {
+				continue
+			}
+			routes = append(routes, caddyadmin.HTTPRoute{
+				Host:      host,
+				Upstreams: []string{upstream},
+			})
+		}
+	}
+
+	sort.Slice(routes, func(i, j int) bool {
+		return routes[i].Host < routes[j].Host
+	})
+	return routes
+}
+
+func prettyCaddyConfig(raw json.RawMessage) (string, error) {
+	if len(bytes.TrimSpace(raw)) == 0 {
+		return "", nil
+	}
+
+	var formatted bytes.Buffer
+	if err := json.Indent(&formatted, raw, "", "  "); err != nil {
+		return "", fmt.Errorf("format live Caddy config: %w", err)
+	}
+	return formatted.String(), nil
+}
+
+func sortedValues(values []string) []string {
+	items := append([]string(nil), values...)
+	sort.Strings(items)
+	return items
+}
+
+func sameStrings(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
 func envContainsPrefix(values []string, prefix string) bool {
 	for _, value := range values {
 		if strings.HasPrefix(value, prefix) {
@@ -527,6 +724,14 @@ func plural(count int) string {
 		return ""
 	}
 	return "s"
+}
+
+func dockerRequirementDetail(err error) string {
+	message := err.Error()
+	if strings.Contains(message, "permission denied while trying to connect to the Docker daemon socket") || strings.Contains(message, "dial unix /var/run/docker.sock: connect: permission denied") {
+		return "The controller can see /var/run/docker.sock, but its container user is missing the host socket group. Recreate the caddytower container with a group_add entry that matches the Docker socket GID on the host."
+	}
+	return message
 }
 
 func (s *Service) AuditLogs(ctx context.Context, filter string, limit int) ([]AuditLogEntry, error) {

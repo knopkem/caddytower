@@ -78,6 +78,8 @@ This installer:
 - creates the external `edge` Docker network if needed
 - copies `docker-compose.yml`, `Caddyfile`, and `caddytower.env`
 - generates `CADDYTOWER_MASTER_KEY` on first run
+- patches the compose file with the host Docker socket group so the non-root
+  controller can manage Docker
 - fills in the main setup values interactively
 - leaves GitHub App setup for later by default so first login is simpler
 - starts bundled `shared-caddy` and `watchtower` only when they are missing,

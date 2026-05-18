@@ -123,6 +123,44 @@ func TestRenderSettings(t *testing.T) {
 			Message:     "These changes will take effect after CaddyTower restarts.",
 			ActionLabel: "Restart now",
 		},
+		CaddyDiagnostics: CaddyDiagnosticsData{
+			Available:         true,
+			Status:            "warning",
+			Summary:           "1 of 2 managed routes need attention.",
+			Detail:            "Expected routes are listed below so you can compare them with the live shared Caddy config.",
+			ManagedRouteCount: 2,
+			HealthyRouteCount: 1,
+			DriftCount:        1,
+			LiveRouteCount:    3,
+			Routes: []CaddyRouteDiagnosticData{
+				{
+					Host:                     "caddytower.pacsnode.com",
+					Status:                   "ok",
+					ExpectedUpstreamsSummary: "caddytower:8080",
+					LiveUpstreamsSummary:     "caddytower:8080",
+					Detail:                   "Live route matches the expected upstream.",
+				},
+				{
+					Host:                     "demo.pacsnode.com",
+					Status:                   "warning",
+					ExpectedUpstreamsSummary: "demo:3000",
+					LiveUpstreamsSummary:     "old-demo:3000",
+					Detail:                   "The live upstream target differs from what CaddyTower expects.",
+				},
+			},
+			RawConfigAvailable: true,
+			RawConfig: `{
+  "apps": {
+    "http": {
+      "servers": {
+        "srv0": {
+          "routes": []
+        }
+      }
+    }
+  }
+}`,
+		},
 	})
 	if err != nil {
 		t.Fatalf("Render() error = %v", err)
@@ -146,6 +184,9 @@ func TestRenderSettings(t *testing.T) {
 	}
 	if !strings.Contains(body, "Latest release") || !strings.Contains(body, "Update and restart") || !strings.Contains(body, "A newer release is available.") {
 		t.Fatalf("rendered settings missing controller update UI: %q", body)
+	}
+	if !strings.Contains(body, "Shared Caddy diagnostics") || !strings.Contains(body, "demo.pacsnode.com") || !strings.Contains(body, "Raw live Caddy config") {
+		t.Fatalf("rendered settings missing shared caddy diagnostics UI: %q", body)
 	}
 	if !strings.Contains(body, "Restart required") || !strings.Contains(body, "Restart now") {
 		t.Fatalf("rendered settings missing restart prompt UI: %q", body)

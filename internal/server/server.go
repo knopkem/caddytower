@@ -278,6 +278,7 @@ type dashboardData struct {
 	projects     []ui.ProjectListItem
 	backups      []ui.BackupItem
 	requirements ui.RequirementsStatusData
+	caddy        ui.CaddyDiagnosticsData
 }
 
 func (s *Server) loadDashboardData(ctx context.Context) (dashboardData, error) {
@@ -286,6 +287,7 @@ func (s *Server) loadDashboardData(ctx context.Context) (dashboardData, error) {
 		projects:     []ui.ProjectListItem{},
 		backups:      []ui.BackupItem{},
 		requirements: ui.RequirementsStatusData{Available: false, ErrorMessage: "Requirement checks appear when Docker and shared Caddy management are enabled."},
+		caddy:        ui.CaddyDiagnosticsData{Available: false, Summary: "Shared Caddy diagnostics are unavailable.", Detail: "Shared Caddy diagnostics appear when Caddy management is enabled."},
 	}
 	if s.projects != nil {
 		dashboard, err := s.projects.Dashboard(ctx)
@@ -303,6 +305,7 @@ func (s *Server) loadDashboardData(ctx context.Context) (dashboardData, error) {
 			data.projects = append(data.projects, projectListItem(project))
 		}
 		data.requirements = requirementsData(dashboard.Requirements)
+		data.caddy = caddyDiagnosticsData(dashboard.Caddy)
 	}
 	if s.backups != nil {
 		snapshots, err := s.backups.ListSnapshots()
@@ -334,6 +337,33 @@ func requirementsData(status projects.RequirementsStatus) ui.RequirementsStatusD
 			Status:  check.Status,
 			Summary: check.Summary,
 			Detail:  check.Detail,
+		})
+	}
+	return data
+}
+
+func caddyDiagnosticsData(diagnostics projects.CaddyDiagnostics) ui.CaddyDiagnosticsData {
+	data := ui.CaddyDiagnosticsData{
+		Available:          diagnostics.Available,
+		Status:             diagnostics.Status,
+		Summary:            diagnostics.Summary,
+		Detail:             diagnostics.Detail,
+		ManagedRouteCount:  diagnostics.ManagedRouteCount,
+		HealthyRouteCount:  diagnostics.HealthyRouteCount,
+		DriftCount:         diagnostics.DriftCount,
+		LiveRouteCount:     diagnostics.LiveRouteCount,
+		RawConfig:          diagnostics.RawConfig,
+		RawConfigAvailable: diagnostics.RawConfigAvailable,
+		RawConfigError:     diagnostics.RawConfigError,
+		Routes:             make([]ui.CaddyRouteDiagnosticData, 0, len(diagnostics.Routes)),
+	}
+	for _, route := range diagnostics.Routes {
+		data.Routes = append(data.Routes, ui.CaddyRouteDiagnosticData{
+			Host:                     route.Host,
+			Status:                   route.Status,
+			ExpectedUpstreamsSummary: strings.Join(route.ExpectedUpstreams, ", "),
+			LiveUpstreamsSummary:     strings.Join(route.LiveUpstreams, ", "),
+			Detail:                   route.Detail,
 		})
 	}
 	return data
@@ -1564,6 +1594,7 @@ func (s *Server) renderSettingsPage(w http.ResponseWriter, r *http.Request, curr
 		VPSStatus:                 s.vpsStatusData(),
 		AuditFilter:               strings.TrimSpace(r.URL.Query().Get("audit")),
 		ControllerUpdate:          s.controllerUpdateStatusFunc(r.Context()),
+		CaddyDiagnostics:          commonData.caddy,
 		RestartPrompt:             restartPromptFromRequest(r),
 	}
 	if s.projects != nil {

@@ -250,6 +250,24 @@ caddytower_ensure_edge_network() {
   fi
 }
 
+caddytower_detect_socket_gid() {
+  local socket_path="${1:-/var/run/docker.sock}"
+  local gid=""
+
+  [[ -S "${socket_path}" ]] || caddytower_die "Docker socket not found at ${socket_path}"
+
+  gid="$(stat -c '%g' "${socket_path}" 2>/dev/null || true)"
+  if [[ -z "${gid}" ]]; then
+    gid="$(stat -f '%g' "${socket_path}" 2>/dev/null || true)"
+  fi
+  if [[ -z "${gid}" ]]; then
+    gid="$(ls -ln "${socket_path}" | awk '{print $4}')"
+  fi
+  [[ -n "${gid}" ]] || caddytower_die "failed to detect the Docker socket group id for ${socket_path}"
+
+  printf '%s' "${gid}"
+}
+
 caddytower_service_container_exists() {
   local service_name="${1:-}"
 
@@ -310,6 +328,70 @@ caddytower_ensure_watchtower_api_version() {
   }
   mv "${tmp_file}" "${compose_file}"
   caddytower_log "Patched ${compose_file} with DOCKER_API_VERSION for Watchtower compatibility"
+}
+
+caddytower_ensure_controller_docker_group() {
+  local compose_file="${1:-}"
+  local socket_path="${2:-/var/run/docker.sock}"
+  local gid=""
+  local tmp_file=""
+
+  [[ -n "${compose_file}" ]] || caddytower_die "internal error: missing compose file path"
+  [[ -f "${compose_file}" ]] || return 0
+
+  if ! grep -q '^  caddytower:$' "${compose_file}"; then
+    return 0
+  fi
+  gid="$(caddytower_detect_socket_gid "${socket_path}")"
+
+  tmp_file="$(mktemp)"
+  awk -v gid="${gid}" '
+    BEGIN {
+      in_caddytower = 0
+      inserted = 0
+      skipping_group_values = 0
+    }
+    /^  caddytower:$/ {
+      in_caddytower = 1
+    }
+    in_caddytower && /^    group_add:$/ {
+      if (!inserted) {
+        print "    group_add:"
+        print "      - \"" gid "\""
+        inserted = 1
+      }
+      skipping_group_values = 1
+      next
+    }
+    in_caddytower && skipping_group_values {
+      if ($0 ~ /^      - /) {
+        next
+      }
+      skipping_group_values = 0
+    }
+    in_caddytower && /^    volumes:$/ && !inserted {
+      print "    group_add:"
+      print "      - \"" gid "\""
+      inserted = 1
+    }
+    /^  [^ ]/ && $0 != "  caddytower:" && in_caddytower {
+      in_caddytower = 0
+      skipping_group_values = 0
+    }
+    {
+      print
+    }
+    END {
+      if (!inserted) {
+        exit 1
+      }
+    }
+  ' "${compose_file}" > "${tmp_file}" || {
+    rm -f "${tmp_file}"
+    caddytower_die "failed to patch Docker socket group access in ${compose_file}"
+  }
+  mv "${tmp_file}" "${compose_file}"
+  caddytower_log "Patched ${compose_file} with Docker socket group access for CaddyTower"
 }
 
 caddytower_configure_github_pem_mount() {

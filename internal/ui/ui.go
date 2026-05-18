@@ -288,6 +288,7 @@ type SettingsPageData struct {
 	AuditFilter               string
 	AuditLogs                 []AuditLogItem
 	ControllerUpdate          ControllerUpdateData
+	CaddyDiagnostics          CaddyDiagnosticsData
 	RestartPrompt             RestartPromptData
 }
 
@@ -312,6 +313,29 @@ type RestartPromptData struct {
 	Title       string
 	Message     string
 	ActionLabel string
+}
+
+type CaddyDiagnosticsData struct {
+	Available          bool
+	Status             string
+	Summary            string
+	Detail             string
+	ManagedRouteCount  int
+	HealthyRouteCount  int
+	DriftCount         int
+	LiveRouteCount     int
+	Routes             []CaddyRouteDiagnosticData
+	RawConfig          string
+	RawConfigAvailable bool
+	RawConfigError     string
+}
+
+type CaddyRouteDiagnosticData struct {
+	Host                     string
+	Status                   string
+	ExpectedUpstreamsSummary string
+	LiveUpstreamsSummary     string
+	Detail                   string
 }
 
 type GitHubRepositoryItem struct {
