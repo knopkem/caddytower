@@ -230,3 +230,58 @@ func TestRenderSetup(t *testing.T) {
 		}
 	}
 }
+
+func TestRenderProjectPageIncludesMountsAndRoutes(t *testing.T) {
+	t.Parallel()
+
+	webUI, err := New()
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	var buf bytes.Buffer
+	err = webUI.Render(&buf, "project.gohtml", ProjectPageData{
+		PageTitle: "CaddyTower | Demo",
+		Headline:  "Edit Demo",
+		Project: ProjectFormData{
+			ID:             "project-1",
+			Action:         "/projects/project-1",
+			SubmitLabel:    "Save and deploy",
+			Type:           "web",
+			Name:           "Demo",
+			Slug:           "demo",
+			ImageRef:       "ghcr.io/example/demo:latest",
+			Subdomain:      "demo",
+			InternalPort:   3000,
+			MountsText:     "/srv/demo/data | /app/data | rw",
+			HTTPRoutesText: "@domains | path_prefix | /api | strip",
+		},
+		ProjectMeta: ProjectListItem{
+			ID:            "project-1",
+			Name:          "Demo",
+			Type:          "web",
+			ContainerName: "caddytower-demo",
+			ImageRef:      "ghcr.io/example/demo:latest",
+			Status:        "running",
+		},
+		Mounts: []ProjectMountItem{{
+			Source: "/srv/demo/data",
+			Target: "/app/data",
+		}},
+		HTTPRoutes: []ProjectHTTPRouteItem{{
+			HostScope:        "Generated + custom domains",
+			MatcherSummary:   "Path prefix /api",
+			TransformSummary: "Strip matched prefix before proxying",
+		}},
+	})
+	if err != nil {
+		t.Fatalf("Render() error = %v", err)
+	}
+
+	body := buf.String()
+	for _, snippet := range []string{"Bind mounts", "HTTP route rules", "Mount summary", "HTTP route summary", "Path prefix /api"} {
+		if !strings.Contains(body, snippet) {
+			t.Fatalf("rendered project page missing %q: %q", snippet, body)
+		}
+	}
+}

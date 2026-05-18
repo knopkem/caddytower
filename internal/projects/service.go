@@ -45,6 +45,11 @@ const (
 	projectTypeWeb            = "web"
 	projectTypeTCP            = "tcp"
 	projectTypeUDP            = "udp"
+	mountTypeBind             = "bind"
+	httpRouteMatchHost        = "host"
+	httpRouteMatchPathPrefix  = "path_prefix"
+	httpRouteMatchPathExact   = "path_exact"
+	httpRouteAllDomainsScope  = "@domains"
 )
 
 var slugPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{1,62}$`)
@@ -148,9 +153,13 @@ type Project struct {
 	ContainerName             string
 	InternalPort              int
 	Ports                     []ProjectPort
+	Mounts                    []ProjectMount
 	WatchtowerEnabled         bool
 	Env                       map[string]string
 	EnvText                   string
+	MountsText                string
+	HTTPRoutes                []ProjectHTTPRoute
+	HTTPRoutesText            string
 	HealthCheckPath           string
 	HealthCheckTimeoutSeconds int
 	CreatedAt                 time.Time
@@ -167,6 +176,22 @@ type ProjectDomain struct {
 	Hostname      string
 	IsPrimary     bool
 	DNSVerifiedAt time.Time
+}
+
+type ProjectMount struct {
+	Type     string
+	Source   string
+	Target   string
+	ReadOnly bool
+}
+
+type ProjectHTTPRoute struct {
+	Hostname      string
+	MatchType     string
+	MatchValue    string
+	StripPrefix   bool
+	RewritePrefix string
+	Priority      int
 }
 
 type ProjectDeploy struct {
@@ -234,6 +259,7 @@ type CaddyDiagnostics struct {
 
 type CaddyRouteDiagnostic struct {
 	Host              string
+	MatcherSummary    string
 	ExpectedUpstreams []string
 	LiveUpstreams     []string
 	Status            string
@@ -279,6 +305,8 @@ type WebProjectInput struct {
 	PortMappingsText          string
 	WatchtowerEnabled         bool
 	EnvText                   string
+	MountsText                string
+	HTTPRoutesText            string
 	HealthCheckPath           string
 	HealthCheckTimeoutSeconds int
 	SkipDeploy                bool
@@ -586,23 +614,25 @@ func (s *Service) caddyDiagnostics(ctx context.Context, settings Settings, proje
 	}
 	diagnostics.LiveRouteCount = len(liveRoutes)
 
-	liveByHost := map[string][]string{}
+	liveByKey := map[string]caddyadmin.HTTPRoute{}
 	for _, route := range liveRoutes {
-		host := strings.TrimSpace(route.Host)
-		if host == "" {
+		key := caddyadmin.RouteKey(route)
+		if key == "||" || key == "" {
 			continue
 		}
-		liveByHost[host] = sortedValues(route.Upstreams)
+		route.Upstreams = sortedValues(route.Upstreams)
+		liveByKey[key] = route
 	}
 
 	for _, route := range expectedRoutes {
 		expectedUpstreams := sortedValues(route.Upstreams)
 		item := CaddyRouteDiagnostic{
 			Host:              route.Host,
+			MatcherSummary:    caddyadmin.MatcherSummary(route),
 			ExpectedUpstreams: expectedUpstreams,
 			Status:            "warning",
 		}
-		liveUpstreams, ok := liveByHost[route.Host]
+		liveRoute, ok := liveByKey[caddyadmin.RouteKey(route)]
 		if !ok {
 			item.Detail = "Missing from the live shared Caddy config."
 			diagnostics.DriftCount++
@@ -610,8 +640,8 @@ func (s *Service) caddyDiagnostics(ctx context.Context, settings Settings, proje
 			continue
 		}
 
-		item.LiveUpstreams = liveUpstreams
-		if !sameStrings(expectedUpstreams, liveUpstreams) {
+		item.LiveUpstreams = liveRoute.Upstreams
+		if !sameStrings(expectedUpstreams, liveRoute.Upstreams) {
 			item.Detail = "The live upstream target differs from what CaddyTower expects."
 			diagnostics.DriftCount++
 			diagnostics.Routes = append(diagnostics.Routes, item)
@@ -646,8 +676,10 @@ func expectedManagedRoutes(settings Settings, projectList []Project, httpAddr st
 	routes := make([]caddyadmin.HTTPRoute, 0, len(projectList)+1)
 	if adminHost := adminHostname(settings.RootDomain); adminHost != "" {
 		routes = append(routes, caddyadmin.HTTPRoute{
-			Host:      adminHost,
-			Upstreams: []string{controllerContainerName + ":" + controllerPort(httpAddr)},
+			Host:       adminHost,
+			MatchType:  httpRouteMatchHost,
+			Upstreams:  []string{controllerContainerName + ":" + controllerPort(httpAddr)},
+			Priority:   -1,
 		})
 	}
 
@@ -655,29 +687,73 @@ func expectedManagedRoutes(settings Settings, projectList []Project, httpAddr st
 		if project.Type != projectTypeWeb {
 			continue
 		}
-		upstream := project.ContainerName + ":" + strconv.Itoa(project.InternalPort)
-		if host := strings.TrimSpace(project.FullDomain); host != "" {
-			routes = append(routes, caddyadmin.HTTPRoute{
-				Host:      host,
-				Upstreams: []string{upstream},
-			})
+		routes = append(routes, expandedProjectRoutes(project)...)
+	}
+
+	sort.Slice(routes, func(i, j int) bool { return caddyadmin.RouteKey(routes[i]) < caddyadmin.RouteKey(routes[j]) })
+	return routes
+}
+
+func expandedProjectRoutes(project Project) []caddyadmin.HTTPRoute {
+	if project.Type != projectTypeWeb {
+		return nil
+	}
+
+	hosts := effectiveProjectRouteHosts(project)
+	if len(hosts) == 0 {
+		return nil
+	}
+	upstream := project.ContainerName + ":" + strconv.Itoa(project.InternalPort)
+	projectRoutes := project.HTTPRoutes
+	if len(projectRoutes) == 0 {
+		projectRoutes = []ProjectHTTPRoute{{MatchType: httpRouteMatchHost}}
+	}
+
+	routes := make([]caddyadmin.HTTPRoute, 0, len(projectRoutes)*len(hosts))
+	for _, route := range projectRoutes {
+		targetHosts := hosts
+		if strings.TrimSpace(route.Hostname) != "" {
+			targetHosts = []string{normalizeHostname(route.Hostname)}
 		}
-		for _, domain := range project.CustomDomains {
-			host := strings.TrimSpace(domain.Hostname)
-			if host == "" {
+		for _, host := range targetHosts {
+			if strings.TrimSpace(host) == "" {
 				continue
 			}
 			routes = append(routes, caddyadmin.HTTPRoute{
-				Host:      host,
-				Upstreams: []string{upstream},
+				Host:          host,
+				MatchType:     normalizeHTTPRouteMatchType(route.MatchType),
+				MatchValue:    strings.TrimSpace(route.MatchValue),
+				StripPrefix:   route.StripPrefix,
+				RewritePrefix: strings.TrimSpace(route.RewritePrefix),
+				Priority:      route.Priority,
+				Upstreams:     []string{upstream},
 			})
 		}
 	}
-
-	sort.Slice(routes, func(i, j int) bool {
-		return routes[i].Host < routes[j].Host
-	})
+	sort.Slice(routes, func(i, j int) bool { return caddyadmin.RouteKey(routes[i]) < caddyadmin.RouteKey(routes[j]) })
 	return routes
+}
+
+func effectiveProjectRouteHosts(project Project) []string {
+	seen := map[string]struct{}{}
+	hosts := make([]string, 0, len(project.CustomDomains)+1)
+	add := func(host string) {
+		host = normalizeHostname(host)
+		if host == "" {
+			return
+		}
+		if _, ok := seen[host]; ok {
+			return
+		}
+		seen[host] = struct{}{}
+		hosts = append(hosts, host)
+	}
+	add(project.FullDomain)
+	for _, domain := range project.CustomDomains {
+		add(domain.Hostname)
+	}
+	sort.Strings(hosts)
+	return hosts
 }
 
 func prettyCaddyConfig(raw json.RawMessage) (string, error) {
@@ -1561,6 +1637,12 @@ func (s *Service) recordFromInput(input WebProjectInput, existingSlug string) (s
 	subdomain := strings.TrimSpace(strings.ToLower(input.Subdomain))
 	internalPort := 0
 	var ports []store.ProjectPortRecord
+	parsedMounts, err := parseMountsText(input.MountsText)
+	if err != nil {
+		return store.ProjectRecord{}, err
+	}
+	mounts := projectMountsToStore(parsedMounts)
+	var httpRoutes []store.ProjectHTTPRouteRecord
 	switch projectType {
 	case projectTypeWeb:
 		if subdomain == "" {
@@ -1581,7 +1663,15 @@ func (s *Service) recordFromInput(input WebProjectInput, existingSlug string) (s
 				return store.ProjectRecord{}, fmt.Errorf("health check timeout must be between 1 and 30 seconds")
 			}
 		}
+		parsedRoutes, err := parseHTTPRoutesText(input.HTTPRoutesText)
+		if err != nil {
+			return store.ProjectRecord{}, err
+		}
+		httpRoutes = projectHTTPRoutesToStore(parsedRoutes)
 	case projectTypeTCP, projectTypeUDP:
+		if strings.TrimSpace(input.HTTPRoutesText) != "" {
+			return store.ProjectRecord{}, fmt.Errorf("HTTP route rules are only available for web projects")
+		}
 		parsedPorts, err := parsePortMappings(input.PortMappingsText, projectType)
 		if err != nil {
 			return store.ProjectRecord{}, err
@@ -1620,7 +1710,9 @@ func (s *Service) recordFromInput(input WebProjectInput, existingSlug string) (s
 		WatchtowerEnabled:         input.WatchtowerEnabled,
 		WebhookSecret:             randomSecret(),
 		Env:                       env,
+		Mounts:                    mounts,
 		Ports:                     ports,
+		HTTPRoutes:                httpRoutes,
 		HealthCheckPath:           strings.TrimSpace(input.HealthCheckPath),
 		HealthCheckTimeoutSeconds: normalizedHealthTimeout(strings.TrimSpace(input.HealthCheckPath), input.HealthCheckTimeoutSeconds),
 	}, nil
@@ -1716,6 +1808,12 @@ func (s *Service) projectFromRecord(ctx context.Context, record store.ProjectRec
 			break
 		}
 	}
+	projectHTTPRoutes := []ProjectHTTPRoute(nil)
+	projectHTTPRoutesText := ""
+	if record.Type == projectTypeWeb {
+		projectHTTPRoutes = defaultProjectHTTPRoutes(record.HTTPRoutes)
+		projectHTTPRoutesText = httpRoutesText(projectHTTPRoutes)
+	}
 
 	return Project{
 		ID:                        record.ID,
@@ -1732,9 +1830,13 @@ func (s *Service) projectFromRecord(ctx context.Context, record store.ProjectRec
 		ContainerName:             containerName(record.Slug),
 		InternalPort:              record.InternalPort,
 		Ports:                     projectPortsFromStore(record.Ports),
+		Mounts:                    projectMountsFromStore(record.Mounts),
 		WatchtowerEnabled:         record.WatchtowerEnabled,
 		Env:                       env,
 		EnvText:                   envText(env),
+		MountsText:                mountsText(projectMountsFromStore(record.Mounts)),
+		HTTPRoutes:                projectHTTPRoutes,
+		HTTPRoutesText:            projectHTTPRoutesText,
 		HealthCheckPath:           record.HealthCheckPath,
 		HealthCheckTimeoutSeconds: record.HealthCheckTimeoutSeconds,
 		CreatedAt:                 record.CreatedAt,
@@ -1855,6 +1957,7 @@ func (s *Service) applyProject(ctx context.Context, project Project, settings Se
 			Env:           project.runtimeEnv(),
 			Labels:        labels,
 			Network:       managedNetworkName,
+			Mounts:        dockerMounts(project.Mounts),
 			RestartPolicy: "unless-stopped",
 		}
 		if project.Type == projectTypeWeb {
@@ -1947,47 +2050,39 @@ func (s *Service) reconcileCaddy(ctx context.Context) error {
 	}
 
 	routes := make([]caddyadmin.HTTPRoute, 0, len(records))
-	managedHosts := make([]string, 0, len(records))
+	managedRouteKeys := make([]string, 0, len(records))
 	if settings.RootDomain != "" {
 		adminHost := adminHostname(settings.RootDomain)
 		routes = append(routes, caddyadmin.HTTPRoute{
 			Host:      adminHost,
+			MatchType: httpRouteMatchHost,
 			Upstreams: []string{controllerContainerName + ":" + controllerPort(s.cfg.HTTPAddr)},
+			Priority:  -1,
 		})
-		managedHosts = append(managedHosts, adminHost)
+		managedRouteKeys = append(managedRouteKeys, caddyadmin.RouteKey(routes[len(routes)-1]))
 	}
 	for _, record := range records {
 		if record.Type != projectTypeWeb {
 			continue
 		}
-		hosts := []string{fqdn(settings.RootDomain, record.Subdomain)}
-		domains, err := s.store.ListProjectDomains(ctx, record.ID)
+		project, err := s.projectFromRecord(ctx, record, settings)
 		if err != nil {
 			return err
 		}
-		for _, domain := range domains {
-			hosts = append(hosts, domain.Hostname)
-		}
-		for _, host := range hosts {
-			host = strings.TrimSpace(host)
-			if host == "" {
-				continue
-			}
-			routes = append(routes, caddyadmin.HTTPRoute{
-				Host:      host,
-				Upstreams: []string{containerName(record.Slug) + ":" + strconv.Itoa(record.InternalPort)},
-			})
-			managedHosts = append(managedHosts, host)
+		projectRoutes := expandedProjectRoutes(project)
+		routes = append(routes, projectRoutes...)
+		for _, route := range projectRoutes {
+			managedRouteKeys = append(managedRouteKeys, caddyadmin.RouteKey(route))
 		}
 	}
-	if len(managedHosts) == 0 {
+	if len(managedRouteKeys) == 0 {
 		return nil
 	}
 	if settings.RootDomain == "" {
 		return fmt.Errorf("root domain is required for caddy reconciliation")
 	}
 
-	_, err = s.caddy.ReconcileManagedRoutes(ctx, routes, managedHosts)
+	_, err = s.caddy.ReconcileManagedRoutes(ctx, routes, managedRouteKeys)
 	return err
 }
 
@@ -2137,6 +2232,103 @@ func projectPortsFromStore(records []store.ProjectPortRecord) []ProjectPort {
 	return ports
 }
 
+func projectMountsFromStore(records []store.ProjectMountRecord) []ProjectMount {
+	if len(records) == 0 {
+		return nil
+	}
+
+	mounts := make([]ProjectMount, 0, len(records))
+	for _, record := range records {
+		mounts = append(mounts, ProjectMount{
+			Type:     record.Type,
+			Source:   record.Source,
+			Target:   record.Target,
+			ReadOnly: record.ReadOnly,
+		})
+	}
+	return mounts
+}
+
+func projectHTTPRoutesFromStore(records []store.ProjectHTTPRouteRecord) []ProjectHTTPRoute {
+	if len(records) == 0 {
+		return nil
+	}
+
+	routes := make([]ProjectHTTPRoute, 0, len(records))
+	for _, record := range records {
+		routes = append(routes, ProjectHTTPRoute{
+			Hostname:      record.Hostname,
+			MatchType:     record.MatchType,
+			MatchValue:    record.MatchValue,
+			StripPrefix:   record.StripPrefix,
+			RewritePrefix: record.RewritePrefix,
+			Priority:      record.Priority,
+		})
+	}
+	return routes
+}
+
+func defaultProjectHTTPRoutes(records []store.ProjectHTTPRouteRecord) []ProjectHTTPRoute {
+	routes := projectHTTPRoutesFromStore(records)
+	if len(routes) > 0 {
+		return routes
+	}
+	return []ProjectHTTPRoute{{
+		MatchType: httpRouteMatchHost,
+		Priority:  0,
+	}}
+}
+
+func dockerMounts(mounts []ProjectMount) []dockerx.Mount {
+	if len(mounts) == 0 {
+		return nil
+	}
+
+	result := make([]dockerx.Mount, 0, len(mounts))
+	for _, mount := range mounts {
+		result = append(result, dockerx.Mount{
+			Source:   mount.Source,
+			Target:   mount.Target,
+			ReadOnly: mount.ReadOnly,
+		})
+	}
+	return result
+}
+
+func projectMountsToStore(mounts []ProjectMount) []store.ProjectMountRecord {
+	if len(mounts) == 0 {
+		return nil
+	}
+	result := make([]store.ProjectMountRecord, 0, len(mounts))
+	for _, mount := range mounts {
+		result = append(result, store.ProjectMountRecord{
+			Type:     mount.Type,
+			Source:   mount.Source,
+			Target:   mount.Target,
+			ReadOnly: mount.ReadOnly,
+		})
+	}
+	return result
+}
+
+func projectHTTPRoutesToStore(routes []ProjectHTTPRoute) []store.ProjectHTTPRouteRecord {
+	if len(routes) == 0 {
+		return nil
+	}
+	result := make([]store.ProjectHTTPRouteRecord, 0, len(routes))
+	for _, route := range routes {
+		result = append(result, store.ProjectHTTPRouteRecord{
+			Hostname:      route.Hostname,
+			MatchType:     route.MatchType,
+			MatchValue:    route.MatchValue,
+			StripPrefix:   route.StripPrefix,
+			RewritePrefix: route.RewritePrefix,
+			Priority:      route.Priority,
+		})
+	}
+	return result
+}
+
 func publishedPorts(ports []ProjectPort) []dockerx.PortBinding {
 	if len(ports) == 0 {
 		return nil
@@ -2257,6 +2449,184 @@ func envText(values map[string]string) string {
 	return strings.Join(lines, "\n")
 }
 
+func mountsText(mounts []ProjectMount) string {
+	if len(mounts) == 0 {
+		return ""
+	}
+
+	lines := make([]string, 0, len(mounts))
+	for _, mount := range mounts {
+		mode := "rw"
+		if mount.ReadOnly {
+			mode = "ro"
+		}
+		lines = append(lines, fmt.Sprintf("%s | %s | %s", mount.Source, mount.Target, mode))
+	}
+	return strings.Join(lines, "\n")
+}
+
+func parseMountsText(raw string) ([]ProjectMount, error) {
+	lines := strings.Split(raw, "\n")
+	mounts := make([]ProjectMount, 0, len(lines))
+	seenTargets := map[string]struct{}{}
+	for index, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		parts := splitDelimitedLine(line, "|")
+		if len(parts) < 2 || len(parts) > 3 {
+			return nil, fmt.Errorf("invalid mount on line %d: use source | target | ro", index+1)
+		}
+		source := strings.TrimSpace(parts[0])
+		target := strings.TrimSpace(parts[1])
+		mode := "rw"
+		if len(parts) == 3 {
+			mode = strings.TrimSpace(strings.ToLower(parts[2]))
+		}
+		if !strings.HasPrefix(source, "/") {
+			return nil, fmt.Errorf("mount source on line %d must be an absolute host path", index+1)
+		}
+		if !strings.HasPrefix(target, "/") {
+			return nil, fmt.Errorf("mount target on line %d must be an absolute container path", index+1)
+		}
+		if isReservedMountTarget(target) {
+			return nil, fmt.Errorf("mount target %s on line %d is reserved", target, index+1)
+		}
+		if _, ok := seenTargets[target]; ok {
+			return nil, fmt.Errorf("mount target %s is listed more than once", target)
+		}
+		seenTargets[target] = struct{}{}
+
+		readOnly := false
+		switch mode {
+		case "", "rw", "readwrite":
+		case "ro", "readonly":
+			readOnly = true
+		default:
+			return nil, fmt.Errorf("mount mode on line %d must be rw or ro", index+1)
+		}
+
+		mounts = append(mounts, ProjectMount{
+			Type:     mountTypeBind,
+			Source:   source,
+			Target:   target,
+			ReadOnly: readOnly,
+		})
+	}
+	return mounts, nil
+}
+
+func httpRoutesText(routes []ProjectHTTPRoute) string {
+	if len(routes) == 0 {
+		return ""
+	}
+
+	lines := make([]string, 0, len(routes))
+	for _, route := range routes {
+		host := route.Hostname
+		if strings.TrimSpace(host) == "" {
+			host = httpRouteAllDomainsScope
+		}
+		line := []string{host, route.MatchType}
+		if route.MatchType != httpRouteMatchHost {
+			line = append(line, route.MatchValue)
+		}
+		transform := ""
+		if route.StripPrefix {
+			transform = "strip"
+		} else if strings.TrimSpace(route.RewritePrefix) != "" {
+			transform = "rewrite=" + route.RewritePrefix
+		}
+		if route.MatchType != httpRouteMatchHost || transform != "" {
+			line = append(line, transform)
+		}
+		lines = append(lines, strings.Join(line, " | "))
+	}
+	return strings.Join(lines, "\n")
+}
+
+func parseHTTPRoutesText(raw string) ([]ProjectHTTPRoute, error) {
+	lines := strings.Split(raw, "\n")
+	routes := make([]ProjectHTTPRoute, 0, len(lines))
+	seen := map[string]struct{}{}
+	for index, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		parts := splitDelimitedLine(line, "|")
+		if len(parts) < 2 || len(parts) > 4 {
+			return nil, fmt.Errorf("invalid HTTP route on line %d: use host | match_type | match_value | strip or rewrite=/prefix", index+1)
+		}
+		host := strings.TrimSpace(parts[0])
+		matchType := normalizeHTTPRouteMatchType(parts[1])
+		matchValue := ""
+		if len(parts) >= 3 {
+			matchValue = strings.TrimSpace(parts[2])
+		}
+		transform := ""
+		if len(parts) == 4 {
+			transform = strings.TrimSpace(parts[3])
+		}
+		if host == httpRouteAllDomainsScope {
+			host = ""
+		}
+		if host != "" {
+			host = normalizeHostname(host)
+			if host == "" || strings.Contains(host, " ") {
+				return nil, fmt.Errorf("HTTP route host on line %d is invalid", index+1)
+			}
+		}
+		route := ProjectHTTPRoute{
+			Hostname:  host,
+			MatchType: matchType,
+			Priority:  len(routes),
+		}
+		switch matchType {
+		case httpRouteMatchHost:
+			if matchValue != "" {
+				return nil, fmt.Errorf("host routes on line %d must not set a match value", index+1)
+			}
+		case httpRouteMatchPathPrefix, httpRouteMatchPathExact:
+			if !strings.HasPrefix(matchValue, "/") {
+				return nil, fmt.Errorf("HTTP route match value on line %d must start with /", index+1)
+			}
+			route.MatchValue = matchValue
+		default:
+			return nil, fmt.Errorf("HTTP route type on line %d must be host, path_prefix, or path_exact", index+1)
+		}
+
+		switch {
+		case transform == "":
+		case strings.EqualFold(transform, "strip"):
+			if matchType != httpRouteMatchPathPrefix {
+				return nil, fmt.Errorf("strip is only valid for path_prefix routes on line %d", index+1)
+			}
+			route.StripPrefix = true
+		case strings.HasPrefix(strings.ToLower(transform), "rewrite="):
+			if matchType == httpRouteMatchHost {
+				return nil, fmt.Errorf("rewrite is only valid for path routes on line %d", index+1)
+			}
+			rewritePrefix := strings.TrimSpace(transform[len("rewrite="):])
+			if !strings.HasPrefix(rewritePrefix, "/") {
+				return nil, fmt.Errorf("rewrite target on line %d must start with /", index+1)
+			}
+			route.RewritePrefix = rewritePrefix
+		default:
+			return nil, fmt.Errorf("unknown HTTP route transform on line %d", index+1)
+		}
+
+		key := strings.Join([]string{route.Hostname, route.MatchType, route.MatchValue}, "|")
+		if _, ok := seen[key]; ok {
+			return nil, fmt.Errorf("HTTP route on line %d duplicates an earlier route", index+1)
+		}
+		seen[key] = struct{}{}
+		routes = append(routes, route)
+	}
+	return routes, nil
+}
+
 func fqdn(rootDomain, subdomain string) string {
 	if strings.TrimSpace(subdomain) == "" {
 		return ""
@@ -2269,6 +2639,35 @@ func fqdn(rootDomain, subdomain string) string {
 
 func normalizeHostname(value string) string {
 	return strings.Trim(strings.ToLower(strings.TrimSpace(value)), ".")
+}
+
+func normalizeHTTPRouteMatchType(value string) string {
+	switch strings.TrimSpace(strings.ToLower(value)) {
+	case httpRouteMatchPathPrefix, "prefix":
+		return httpRouteMatchPathPrefix
+	case httpRouteMatchPathExact, "exact":
+		return httpRouteMatchPathExact
+	default:
+		return httpRouteMatchHost
+	}
+}
+
+func splitDelimitedLine(value, delimiter string) []string {
+	rawParts := strings.Split(value, delimiter)
+	parts := make([]string, 0, len(rawParts))
+	for _, part := range rawParts {
+		parts = append(parts, strings.TrimSpace(part))
+	}
+	return parts
+}
+
+func isReservedMountTarget(target string) bool {
+	switch strings.TrimSpace(target) {
+	case "/var/run/docker.sock", "/data":
+		return true
+	default:
+		return false
+	}
 }
 
 func normalizedHealthTimeout(path string, timeoutSeconds int) int {

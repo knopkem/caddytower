@@ -74,6 +74,8 @@ type ProjectFormData struct {
 	PortMappingsText          string
 	WatchtowerEnabled         bool
 	EnvText                   string
+	MountsText                string
+	HTTPRoutesText            string
 	SlugReadOnly              bool
 	TypeReadOnly              bool
 }
@@ -141,6 +143,18 @@ type ProjectEnvItem struct {
 	Value       string
 	MaskedValue string
 	Sensitive   bool
+}
+
+type ProjectMountItem struct {
+	Source   string
+	Target   string
+	ReadOnly bool
+}
+
+type ProjectHTTPRouteItem struct {
+	HostScope         string
+	MatcherSummary    string
+	TransformSummary  string
 }
 
 type ProjectRuntimeItem struct {
@@ -332,6 +346,7 @@ type CaddyDiagnosticsData struct {
 
 type CaddyRouteDiagnosticData struct {
 	Host                     string
+	MatcherSummary           string
 	Status                   string
 	ExpectedUpstreamsSummary string
 	LiveUpstreamsSummary     string
@@ -414,6 +429,8 @@ type ProjectPageData struct {
 	DomainForm         ProjectDomainFormData
 	Deploys            []ProjectDeployItem
 	EnvItems           []ProjectEnvItem
+	Mounts             []ProjectMountItem
+	HTTPRoutes         []ProjectHTTPRouteItem
 	DeployEventsURL    string
 	Attachments        []DBAttachmentItem
 	AttachmentForm     DBAttachmentFormData

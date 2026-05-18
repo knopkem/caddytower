@@ -360,6 +360,7 @@ func caddyDiagnosticsData(diagnostics projects.CaddyDiagnostics) ui.CaddyDiagnos
 	for _, route := range diagnostics.Routes {
 		data.Routes = append(data.Routes, ui.CaddyRouteDiagnosticData{
 			Host:                     route.Host,
+			MatcherSummary:           route.MatcherSummary,
 			Status:                   route.Status,
 			ExpectedUpstreamsSummary: strings.Join(route.ExpectedUpstreams, ", "),
 			LiveUpstreamsSummary:     strings.Join(route.LiveUpstreams, ", "),
@@ -887,6 +888,8 @@ func (s *Server) handleProjectPage(w http.ResponseWriter, r *http.Request) {
 		PortMappingsText:          projects.PortMappingsText(project.Ports),
 		WatchtowerEnabled:         project.WatchtowerEnabled,
 		EnvText:                   project.EnvText,
+		MountsText:                project.MountsText,
+		HTTPRoutesText:            project.HTTPRoutesText,
 		SlugReadOnly:              true,
 		TypeReadOnly:              true,
 	}, "", r.URL.Query().Get("info"))
@@ -1489,6 +1492,33 @@ func (s *Server) renderProjectPage(w http.ResponseWriter, r *http.Request, curre
 			CanRollback: strings.TrimSpace(deploy.ImageDigest) != "",
 		})
 	}
+	mounts := make([]ui.ProjectMountItem, 0, len(project.Mounts))
+	for _, mount := range project.Mounts {
+		mounts = append(mounts, ui.ProjectMountItem{
+			Source:   mount.Source,
+			Target:   mount.Target,
+			ReadOnly: mount.ReadOnly,
+		})
+	}
+	httpRoutes := make([]ui.ProjectHTTPRouteItem, 0, len(project.HTTPRoutes))
+	for _, route := range project.HTTPRoutes {
+		hostScope := route.Hostname
+		if strings.TrimSpace(hostScope) == "" {
+			hostScope = "Generated + custom domains"
+		}
+		transform := "None"
+		switch {
+		case route.StripPrefix:
+			transform = "Strip matched prefix before proxying"
+		case strings.TrimSpace(route.RewritePrefix) != "":
+			transform = "Rewrite matched path to " + route.RewritePrefix
+		}
+		httpRoutes = append(httpRoutes, ui.ProjectHTTPRouteItem{
+			HostScope:        hostScope,
+			MatcherSummary:   caddyRouteMatcherSummary(route.MatchType, route.MatchValue),
+			TransformSummary: transform,
+		})
+	}
 	runtimeData := ui.ProjectRuntimeItem{
 		Available:     false,
 		Status:        project.Status,
@@ -1528,6 +1558,8 @@ func (s *Server) renderProjectPage(w http.ResponseWriter, r *http.Request, curre
 		Domains:           domains,
 		Deploys:           deploys,
 		EnvItems:          maskEnvItems(project.Env),
+		Mounts:            mounts,
+		HTTPRoutes:        httpRoutes,
 		DeployEventsURL:   "/projects/" + project.ID + "/events/stream",
 		Attachments:       attachments,
 		AttachmentForm:    ui.DBAttachmentFormData{Engine: "pg", EnvVarName: "DATABASE_URL"},
@@ -1760,6 +1792,8 @@ func (s *Server) renderProjectWithFallback(w http.ResponseWriter, r *http.Reques
 			PortMappingsText:          projects.PortMappingsText(project.Ports),
 			WatchtowerEnabled:         project.WatchtowerEnabled,
 			EnvText:                   project.EnvText,
+			MountsText:                project.MountsText,
+			HTTPRoutesText:            project.HTTPRoutesText,
 			SlugReadOnly:              true,
 			TypeReadOnly:              true,
 		}
@@ -1821,6 +1855,8 @@ func projectInputFromRequest(r *http.Request, projectID, fixedType string) (proj
 		PortMappingsText:          r.FormValue("port_mappings"),
 		WatchtowerEnabled:         projects.ParseBoolCheckbox(r.FormValue("watchtower_enabled")),
 		EnvText:                   r.FormValue("env_text"),
+		MountsText:                r.FormValue("mounts_text"),
+		HTTPRoutesText:            r.FormValue("http_routes_text"),
 	}
 
 	form := projectFormDataFromInput(input, projectID)
@@ -1859,6 +1895,8 @@ func projectFormDataFromRequest(r *http.Request, projectID, projectType string) 
 		PortMappingsText:  r.FormValue("port_mappings"),
 		WatchtowerEnabled: projects.ParseBoolCheckbox(r.FormValue("watchtower_enabled")),
 		EnvText:           r.FormValue("env_text"),
+		MountsText:        r.FormValue("mounts_text"),
+		HTTPRoutesText:    r.FormValue("http_routes_text"),
 	}
 	if internalPort, err := strconv.Atoi(strings.TrimSpace(r.FormValue("internal_port"))); err == nil {
 		input.InternalPort = internalPort
@@ -1885,6 +1923,8 @@ func projectFormDataFromInput(input projects.WebProjectInput, projectID string) 
 		PortMappingsText:          input.PortMappingsText,
 		WatchtowerEnabled:         input.WatchtowerEnabled,
 		EnvText:                   input.EnvText,
+		MountsText:                input.MountsText,
+		HTTPRoutesText:            input.HTTPRoutesText,
 		SlugReadOnly:              projectID != "",
 	}
 	if form.Type == "" {
@@ -1908,6 +1948,17 @@ func projectEndpointSummary(project projects.Project) string {
 		return project.Subdomain
 	}
 	return strings.ReplaceAll(projects.PortMappingsText(project.Ports), "\n", ", ")
+}
+
+func caddyRouteMatcherSummary(matchType, matchValue string) string {
+	switch strings.TrimSpace(matchType) {
+	case "path_prefix":
+		return "Path prefix " + matchValue
+	case "path_exact":
+		return "Exact path " + matchValue
+	default:
+		return "Catch-all host"
+	}
 }
 
 func formatRelativeTime(value time.Time) string {

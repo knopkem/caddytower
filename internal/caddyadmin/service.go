@@ -20,8 +20,13 @@ type Client struct {
 }
 
 type HTTPRoute struct {
-	Host      string
-	Upstreams []string
+	Host          string
+	MatchType     string
+	MatchValue    string
+	StripPrefix   bool
+	RewritePrefix string
+	Priority      int
+	Upstreams     []string
 }
 
 type Config struct {
@@ -48,17 +53,26 @@ type RouteRule struct {
 }
 
 type Match struct {
-	Host []string `json:"host,omitempty"`
+	Host       []string `json:"host,omitempty"`
+	PathPrefix []string `json:"path_prefix,omitempty"`
+	PathExact  []string `json:"path_exact,omitempty"`
 }
 
 type Handler struct {
-	Handler   string              `json:"handler"`
-	Encodings map[string]struct{} `json:"encodings,omitempty"`
-	Upstreams []Upstream          `json:"upstreams,omitempty"`
+	Handler         string              `json:"handler"`
+	Encodings       map[string]struct{} `json:"encodings,omitempty"`
+	Upstreams       []Upstream          `json:"upstreams,omitempty"`
+	StripPathPrefix string              `json:"strip_path_prefix,omitempty"`
+	URISubstring    []URISubstring      `json:"uri_substring,omitempty"`
 }
 
 type Upstream struct {
 	Dial string `json:"dial"`
+}
+
+type URISubstring struct {
+	Find    string `json:"find,omitempty"`
+	Replace string `json:"replace,omitempty"`
 }
 
 func New(baseURL string, httpClient *http.Client) (*Client, error) {
@@ -86,9 +100,7 @@ func New(baseURL string, httpClient *http.Client) (*Client, error) {
 
 func BuildConfig(routes []HTTPRoute) Config {
 	sortedRoutes := append([]HTTPRoute(nil), routes...)
-	sort.Slice(sortedRoutes, func(i, j int) bool {
-		return sortedRoutes[i].Host < sortedRoutes[j].Host
-	})
+	sort.Slice(sortedRoutes, func(i, j int) bool { return routeLess(sortedRoutes[i], sortedRoutes[j]) })
 
 	serverRoutes := make([]RouteRule, 0, len(sortedRoutes))
 	for _, route := range sortedRoutes {
@@ -100,23 +112,46 @@ func BuildConfig(routes []HTTPRoute) Config {
 			handlerUpstreams = append(handlerUpstreams, Upstream{Dial: upstream})
 		}
 
-		serverRoutes = append(serverRoutes, RouteRule{
-			Match: []Match{{
-				Host: []string{route.Host},
-			}},
-			Handle: []Handler{
-				{
-					Handler: "encode",
-					Encodings: map[string]struct{}{
-						"gzip": {},
-						"zstd": {},
-					},
-				},
-				{
-					Handler:   "reverse_proxy",
-					Upstreams: handlerUpstreams,
+		match := Match{
+			Host: []string{route.Host},
+		}
+		switch route.MatchType {
+		case "path_prefix":
+			match.PathPrefix = []string{route.MatchValue}
+		case "path_exact":
+			match.PathExact = []string{route.MatchValue}
+		}
+
+		handlers := []Handler{
+			{
+				Handler: "encode",
+				Encodings: map[string]struct{}{
+					"gzip": {},
+					"zstd": {},
 				},
 			},
+		}
+		if route.StripPrefix || strings.TrimSpace(route.RewritePrefix) != "" {
+			rewrite := Handler{Handler: "rewrite"}
+			if route.StripPrefix {
+				rewrite.StripPathPrefix = route.MatchValue
+			}
+			if strings.TrimSpace(route.RewritePrefix) != "" {
+				rewrite.URISubstring = []URISubstring{{
+					Find:    route.MatchValue,
+					Replace: route.RewritePrefix,
+				}}
+			}
+			handlers = append(handlers, rewrite)
+		}
+		handlers = append(handlers, Handler{
+			Handler:   "reverse_proxy",
+			Upstreams: handlerUpstreams,
+		})
+
+		serverRoutes = append(serverRoutes, RouteRule{
+			Match:    []Match{match},
+			Handle:   handlers,
 			Terminal: true,
 		})
 	}
@@ -240,13 +275,13 @@ func (c *Client) Reconcile(ctx context.Context, desired Config) (bool, error) {
 	return true, nil
 }
 
-func (c *Client) ReconcileManagedRoutes(ctx context.Context, routes []HTTPRoute, managedHosts []string) (bool, error) {
+func (c *Client) ReconcileManagedRoutes(ctx context.Context, routes []HTTPRoute, managedKeys []string) (bool, error) {
 	current, err := c.GetConfig(ctx)
 	if err != nil {
 		return false, err
 	}
 
-	merged, err := MergeManagedRoutes(current, routes, managedHosts)
+	merged, err := MergeManagedRoutes(current, routes, managedKeys)
 	if err != nil {
 		return false, err
 	}
@@ -286,7 +321,7 @@ func (c *Client) ReconcileManagedRoutes(ctx context.Context, routes []HTTPRoute,
 	return true, nil
 }
 
-func MergeManagedRoutes(current json.RawMessage, routes []HTTPRoute, managedHosts []string) (json.RawMessage, error) {
+func MergeManagedRoutes(current json.RawMessage, routes []HTTPRoute, managedKeys []string) (json.RawMessage, error) {
 	var root map[string]any
 	if len(bytes.TrimSpace(current)) == 0 {
 		root = map[string]any{}
@@ -306,7 +341,7 @@ func MergeManagedRoutes(current json.RawMessage, routes []HTTPRoute, managedHost
 	preserved := make([]any, 0)
 	if existing, ok := server["routes"].([]any); ok {
 		for _, item := range existing {
-			if !routeMatchesManagedHosts(item, managedHosts) {
+			if !routeMatchesManagedKeys(item, managedKeys) {
 				preserved = append(preserved, item)
 			}
 		}
@@ -349,21 +384,39 @@ func ExtractHTTPRoutes(current json.RawMessage) ([]HTTPRoute, error) {
 	routes := make([]HTTPRoute, 0, len(server.Routes))
 	for _, route := range server.Routes {
 		hosts := make([]string, 0)
+		matchType := "host"
+		matchValue := ""
 		for _, match := range route.Match {
 			hosts = append(hosts, match.Host...)
+			if len(match.PathExact) > 0 && strings.TrimSpace(match.PathExact[0]) != "" {
+				matchType = "path_exact"
+				matchValue = strings.TrimSpace(match.PathExact[0])
+			} else if len(match.PathPrefix) > 0 && strings.TrimSpace(match.PathPrefix[0]) != "" {
+				matchType = "path_prefix"
+				matchValue = strings.TrimSpace(match.PathPrefix[0])
+			}
 		}
 		if len(hosts) == 0 {
 			continue
 		}
 
 		upstreams := make([]string, 0)
+		stripPrefix := false
+		rewritePrefix := ""
 		for _, handler := range route.Handle {
-			if handler.Handler != "reverse_proxy" {
-				continue
-			}
-			for _, upstream := range handler.Upstreams {
-				if strings.TrimSpace(upstream.Dial) != "" {
-					upstreams = append(upstreams, upstream.Dial)
+			switch handler.Handler {
+			case "reverse_proxy":
+				for _, upstream := range handler.Upstreams {
+					if strings.TrimSpace(upstream.Dial) != "" {
+						upstreams = append(upstreams, upstream.Dial)
+					}
+				}
+			case "rewrite":
+				if strings.TrimSpace(handler.StripPathPrefix) != "" {
+					stripPrefix = true
+				}
+				if len(handler.URISubstring) > 0 && strings.TrimSpace(handler.URISubstring[0].Replace) != "" {
+					rewritePrefix = strings.TrimSpace(handler.URISubstring[0].Replace)
 				}
 			}
 		}
@@ -375,15 +428,17 @@ func ExtractHTTPRoutes(current json.RawMessage) ([]HTTPRoute, error) {
 		sort.Strings(upstreams)
 		for _, host := range hosts {
 			routes = append(routes, HTTPRoute{
-				Host:      host,
-				Upstreams: append([]string(nil), upstreams...),
+				Host:          host,
+				MatchType:     matchType,
+				MatchValue:    matchValue,
+				StripPrefix:   stripPrefix,
+				RewritePrefix: rewritePrefix,
+				Upstreams:     append([]string(nil), upstreams...),
 			})
 		}
 	}
 
-	sort.Slice(routes, func(i, j int) bool {
-		return routes[i].Host < routes[j].Host
-	})
+	sort.Slice(routes, func(i, j int) bool { return routeLess(routes[i], routes[j]) })
 	return routes, nil
 }
 
@@ -405,7 +460,7 @@ func ensureMap(root map[string]any, key string) map[string]any {
 	return next
 }
 
-func routeMatchesManagedHosts(route any, managedHosts []string) bool {
+func routeMatchesManagedKeys(route any, managedKeys []string) bool {
 	routeMap, ok := route.(map[string]any)
 	if !ok {
 		return false
@@ -417,8 +472,8 @@ func routeMatchesManagedHosts(route any, managedHosts []string) bool {
 	}
 
 	managedSet := map[string]struct{}{}
-	for _, host := range managedHosts {
-		managedSet[host] = struct{}{}
+	for _, key := range managedKeys {
+		managedSet[key] = struct{}{}
 	}
 
 	for _, matcher := range matchers {
@@ -430,10 +485,27 @@ func routeMatchesManagedHosts(route any, managedHosts []string) bool {
 		if !ok {
 			continue
 		}
+		matchType := "host"
+		matchValue := ""
+		if values, ok := matcherMap["path_exact"].([]any); ok && len(values) > 0 {
+			if value, ok := values[0].(string); ok && strings.TrimSpace(value) != "" {
+				matchType = "path_exact"
+				matchValue = strings.TrimSpace(value)
+			}
+		} else if values, ok := matcherMap["path_prefix"].([]any); ok && len(values) > 0 {
+			if value, ok := values[0].(string); ok && strings.TrimSpace(value) != "" {
+				matchType = "path_prefix"
+				matchValue = strings.TrimSpace(value)
+			}
+		}
 		for _, host := range hosts {
 			hostValue, ok := host.(string)
 			if ok {
-				if _, exists := managedSet[hostValue]; exists {
+				if _, exists := managedSet[RouteKey(HTTPRoute{
+					Host:       hostValue,
+					MatchType:  matchType,
+					MatchValue: matchValue,
+				})]; exists {
 					return true
 				}
 			}
@@ -441,4 +513,59 @@ func routeMatchesManagedHosts(route any, managedHosts []string) bool {
 	}
 
 	return false
+}
+
+func RouteKey(route HTTPRoute) string {
+	return strings.Join([]string{
+		strings.TrimSpace(strings.ToLower(route.Host)),
+		normalizedMatchType(route.MatchType),
+		strings.TrimSpace(route.MatchValue),
+	}, "|")
+}
+
+func MatcherSummary(route HTTPRoute) string {
+	switch normalizedMatchType(route.MatchType) {
+	case "path_prefix":
+		return "prefix " + strings.TrimSpace(route.MatchValue)
+	case "path_exact":
+		return "exact " + strings.TrimSpace(route.MatchValue)
+	default:
+		return "catch-all host"
+	}
+}
+
+func normalizedMatchType(value string) string {
+	switch strings.TrimSpace(value) {
+	case "path_prefix", "path_exact":
+		return strings.TrimSpace(value)
+	default:
+		return "host"
+	}
+}
+
+func routeLess(a, b HTTPRoute) bool {
+	if a.Host != b.Host {
+		return a.Host < b.Host
+	}
+	if routeSpecificity(a) != routeSpecificity(b) {
+		return routeSpecificity(a) > routeSpecificity(b)
+	}
+	if len(strings.TrimSpace(a.MatchValue)) != len(strings.TrimSpace(b.MatchValue)) {
+		return len(strings.TrimSpace(a.MatchValue)) > len(strings.TrimSpace(b.MatchValue))
+	}
+	if a.Priority != b.Priority {
+		return a.Priority < b.Priority
+	}
+	return MatcherSummary(a) < MatcherSummary(b)
+}
+
+func routeSpecificity(route HTTPRoute) int {
+	switch normalizedMatchType(route.MatchType) {
+	case "path_exact":
+		return 2
+	case "path_prefix":
+		return 1
+	default:
+		return 0
+	}
 }

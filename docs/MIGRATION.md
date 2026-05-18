@@ -44,9 +44,32 @@ CaddyTower-managed routes without dropping existing subdomains.
   that already have a clean image-based workflow.
 - Copy the real image refs, ports, subdomains, and required environment values
   from the current stack into the new project definitions.
+- If the current app depends on host data or mounted config files, copy those
+  bind mounts too. CaddyTower now accepts one bind mount per line in:
+
+  ```text
+  /host/source | /container/target | rw
+  /host/config.json | /app/config.json | ro
+  ```
+
+- For web projects that need more than a single host catch-all route, fill in
+  **HTTP route rules** using:
+
+  ```text
+  @domains | host
+  @domains | path_prefix | /api | strip
+  example.org | path_exact | /ready | rewrite=/healthz
+  ```
+
+  Notes:
+  - `@domains` means “the generated subdomain plus any custom domains”.
+  - Valid match types are `host`, `path_prefix`, and `path_exact`.
+  - Valid transforms are blank, `strip`, or `rewrite=/new-path`.
 - Before moving a hostname, open the new project and confirm:
   - subdomains
   - published ports
+  - bind mounts
+  - HTTP route rules
   - env values
   - webhook secrets
 
@@ -64,7 +87,59 @@ CaddyTower-managed routes without dropping existing subdomains.
 - Once confirmed, let CaddyTower reconcile the rest of the managed hosts.
 
 Because CaddyTower merges managed hosts into the existing JSON config, unmanaged
-routes stay in place.
+routes stay in place. Managed routes are now matched by **host + route matcher**
+instead of host only, so one managed `/api` split route no longer causes every
+other route on the same host to be replaced.
+
+## 6a. Migration recipes for the current VPS
+
+### cameos
+
+- Create a normal **web** project.
+- Use the current image ref and internal port.
+- Leave **Bind mounts** empty.
+- Leave **HTTP route rules** empty or keep the default catch-all host route.
+
+### books
+
+- Create a **web** project for `books-app`.
+- Copy the current image, subdomain, and port.
+- Add the persistent data bind mount, for example:
+
+  ```text
+  /home/ubuntu/book-search-server/packages/server/data | /app/packages/server/data | rw
+  ```
+
+- Start with the default catch-all host route.
+
+### totala
+
+- Recreate `totala-web` as a **web** project.
+- Mount the Nginx config that currently wires `/ws` to the companion service:
+
+  ```text
+  /home/ubuntu/book-search-server/deploy/totala.nginx.conf | /etc/nginx/conf.d/default.conf | ro
+  ```
+
+- Recreate the companion netserver as a separate **UDP/TCP** project if you want
+  CaddyTower to manage it too.
+- Keep the web project on the default catch-all host route unless you later move
+  the websocket split into explicit CaddyTower HTTP rules.
+
+### lobbyalarm
+
+- Recreate the frontend as a **web** project and the backend/database as separate
+  managed services as needed.
+- Keep the frontend container on the default catch-all host route.
+- Add the backend split on the same host with:
+
+  ```text
+  @domains | path_prefix | /api | strip
+  @domains | host
+  ```
+
+- If the backend also needs mounted host data, add those bind mounts to the
+  backend project itself.
 
 ## 7. Clean up the old manual path
 
@@ -72,8 +147,17 @@ routes stay in place.
   `Caddyfile.shared`.
 - Remove legacy per-app Caddyfile fragments only after their matching projects
   are visible and healthy in the dashboard.
+- Remove legacy bind-mounted config files only after the matching CaddyTower
+  project shows the same mount list and routing behavior from its project page.
 - Keep the old file around as `.bak` until you have at least one successful
   nightly backup.
+
+## 7a. What still stays out of scope
+
+- In-place adoption of already-running external containers without recreating
+  them.
+- Raw arbitrary Caddy JSON editing from the UI.
+- Docker named volumes, tmpfs mounts, and other advanced mount propagation flags.
 
 ## 8. Roll back if needed
 

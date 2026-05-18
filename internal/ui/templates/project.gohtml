@@ -241,6 +241,18 @@
                 </details>
               </div>
             </div>
+            <label class="field">
+              <span>Bind mounts</span>
+              <textarea name="mounts_text" rows="5" placeholder="/srv/books-data | /app/data | rw&#10;/srv/totala/nginx.conf | /etc/nginx/conf.d/default.conf | ro">{{.Project.MountsText}}</textarea>
+              <small class="field-hint">One mount per line in <span class="inline-code">source | target | rw|ro</span> format.</small>
+            </label>
+            {{if eq .Project.Type "web"}}
+            <label class="field">
+              <span>HTTP route rules</span>
+              <textarea name="http_routes_text" rows="5" placeholder="@domains | host |  |&#10;@domains | path_prefix | /api | strip&#10;api.example.com | path_exact | /ready | rewrite=/healthz">{{.Project.HTTPRoutesText}}</textarea>
+              <small class="field-hint">One rule per line in <span class="inline-code">host | match_type | match_value | transform</span> format. Use <span class="inline-code">@domains</span> to target the generated domain plus any custom domains. Valid match types: <span class="inline-code">host</span>, <span class="inline-code">path_prefix</span>, <span class="inline-code">path_exact</span>. Valid transforms: blank, <span class="inline-code">strip</span>, or <span class="inline-code">rewrite=/new-prefix</span>.</small>
+            </label>
+            {{end}}
             <button type="submit">{{.Project.SubmitLabel}}</button>
           </form>
         </article>
@@ -270,6 +282,62 @@
           </div>
           {{end}}
         </article>
+
+        <article class="card">
+          <div class="card-header">
+            <div class="card-title">
+              <h2>Mount summary</h2>
+              <p class="panel-copy">Bind mounts that CaddyTower reapplies on every recreate.</p>
+            </div>
+          </div>
+          {{if .Mounts}}
+          <div class="stack section-spacer">
+            {{range .Mounts}}
+            <article class="subcard">
+              <dl class="kv compact-kv">
+                <div><dt>Source</dt><dd class="mono">{{.Source}}</dd></div>
+                <div><dt>Target</dt><dd class="mono">{{.Target}}</dd></div>
+                <div><dt>Mode</dt><dd>{{if .ReadOnly}}Read-only{{else}}Read-write{{end}}</dd></div>
+              </dl>
+            </article>
+            {{end}}
+          </div>
+          {{else}}
+          <div class="empty-state section-spacer">
+            <p><strong>No bind mounts configured.</strong></p>
+            <p>Add one if this container needs persistent host data or a mounted config file.</p>
+          </div>
+          {{end}}
+        </article>
+
+        {{if eq .Project.Type "web"}}
+        <article class="card">
+          <div class="card-header">
+            <div class="card-title">
+              <h2>HTTP route summary</h2>
+              <p class="panel-copy">These rules are expanded into shared-Caddy routes for the generated and custom domains.</p>
+            </div>
+          </div>
+          {{if .HTTPRoutes}}
+          <div class="stack section-spacer">
+            {{range .HTTPRoutes}}
+            <article class="subcard">
+              <dl class="kv compact-kv">
+                <div><dt>Host scope</dt><dd>{{.HostScope}}</dd></div>
+                <div><dt>Matcher</dt><dd>{{.MatcherSummary}}</dd></div>
+                <div><dt>Transform</dt><dd>{{.TransformSummary}}</dd></div>
+              </dl>
+            </article>
+            {{end}}
+          </div>
+          {{else}}
+          <div class="empty-state section-spacer">
+            <p><strong>No explicit HTTP rules saved.</strong></p>
+            <p>CaddyTower will still route the generated and custom domains as catch-all host rules.</p>
+          </div>
+          {{end}}
+        </article>
+        {{end}}
       </section>
 
       <section class="page-grid two-up section-spacer">

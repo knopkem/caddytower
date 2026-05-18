@@ -578,6 +578,19 @@
               <span>Environment variables</span>
               <textarea name="env_text" rows="8" placeholder="KEY=value&#10;ANOTHER=value">{{.CreateForm.EnvText}}</textarea>
             </label>
+            <label class="field">
+              <span>Bind mounts</span>
+              <textarea name="mounts_text" rows="4" placeholder="/srv/books-data | /app/data | rw&#10;/srv/totala/nginx.conf | /etc/nginx/conf.d/default.conf | ro">{{.CreateForm.MountsText}}</textarea>
+              <small class="field-hint">Optional. One mount per line in <span class="inline-code">source | target | rw|ro</span> format.</small>
+            </label>
+            <fieldset data-web-fields>
+              <legend>Advanced HTTP routes</legend>
+              <label class="field">
+                <span>HTTP route rules</span>
+                <textarea name="http_routes_text" rows="4" placeholder="@domains | host |  |&#10;@domains | path_prefix | /api | strip">{{.CreateForm.HTTPRoutesText}}</textarea>
+                <small class="field-hint">Optional. One rule per line in <span class="inline-code">host|match_type|match_value|transform</span> format. Use <span class="inline-code">@domains</span> to apply the rule to the generated domain plus any custom domains.</small>
+              </label>
+            </fieldset>
             <button type="submit">Create and deploy</button>
           </form>
         </article>

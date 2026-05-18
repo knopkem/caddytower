@@ -141,7 +141,10 @@ func TestMergeManagedRoutesPreservesUnmanagedHosts(t *testing.T) {
 	merged, err := MergeManagedRoutes(current, []HTTPRoute{
 		{Host: "demo.example.com", Upstreams: []string{"demo:3000"}},
 		{Host: "cameos.example.com", Upstreams: []string{"cameos:8080"}},
-	}, []string{"demo.example.com", "cameos.example.com"})
+	}, []string{
+		RouteKey(HTTPRoute{Host: "demo.example.com"}),
+		RouteKey(HTTPRoute{Host: "cameos.example.com"}),
+	})
 	if err != nil {
 		t.Fatalf("MergeManagedRoutes() error = %v", err)
 	}
@@ -191,5 +194,40 @@ func TestExtractHTTPRoutesReadsReverseProxyHosts(t *testing.T) {
 	}
 	if routes[0].Host != "demo.example.com" || routes[0].Upstreams[0] != "demo:3000" {
 		t.Fatalf("routes = %#v", routes)
+	}
+}
+
+func TestBuildConfigIncludesPathMatchersAndRewriteHandlers(t *testing.T) {
+	t.Parallel()
+
+	cfg := BuildConfig([]HTTPRoute{
+		{
+			Host:        "demo.example.com",
+			MatchType:   "path_prefix",
+			MatchValue:  "/api",
+			StripPrefix: true,
+			Upstreams:   []string{"demo-api:8000"},
+		},
+		{
+			Host:          "demo.example.com",
+			MatchType:     "path_exact",
+			MatchValue:    "/ready",
+			RewritePrefix: "/healthz",
+			Upstreams:     []string{"demo-web:3000"},
+		},
+	})
+
+	routes := cfg.Apps.HTTP.Servers[defaultServerName].Routes
+	if len(routes) != 2 {
+		t.Fatalf("route count = %d", len(routes))
+	}
+	if got := routes[0].Match[0].PathExact[0]; got != "/ready" {
+		t.Fatalf("exact matcher = %q", got)
+	}
+	if got := routes[1].Match[0].PathPrefix[0]; got != "/api" {
+		t.Fatalf("prefix matcher = %q", got)
+	}
+	if got := routes[1].Handle[1].StripPathPrefix; got != "/api" {
+		t.Fatalf("strip prefix = %q", got)
 	}
 }

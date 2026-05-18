@@ -34,10 +34,12 @@ func TestOpenAppliesMigrations(t *testing.T) {
 		"projects",
 		"project_env",
 		"project_volumes",
+		"project_mounts",
 		"project_ports",
 		"project_db_attachments",
 		"project_domains",
 		"project_deploys",
+		"project_http_routes",
 		"github_installations",
 		"audit_log",
 	} {

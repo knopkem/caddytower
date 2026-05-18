@@ -71,8 +71,8 @@ func TestCreateWebProjectDeploysAndPersists(t *testing.T) {
 	if docker.recreateCount != 1 {
 		t.Fatalf("recreateCount = %d", docker.recreateCount)
 	}
-	if len(caddy.managedHosts) != 2 || caddy.managedHosts[0] != "caddytower.example.com" || caddy.managedHosts[1] != "demo.example.com" {
-		t.Fatalf("managed hosts = %#v", caddy.managedHosts)
+	if len(caddy.managedHosts) != 2 || caddy.managedHosts[0] != "caddytower.example.com|host|" || caddy.managedHosts[1] != "demo.example.com|host|" {
+		t.Fatalf("managed route keys = %#v", caddy.managedHosts)
 	}
 	if cloudflareFactory.client.upsertCount != 2 {
 		t.Fatalf("upsertCount = %d", cloudflareFactory.client.upsertCount)
@@ -133,8 +133,8 @@ func TestSaveSettingsReconcilesAdminRouteAndDNS(t *testing.T) {
 		t.Fatalf("SaveSettings() error = %v", err)
 	}
 
-	if len(caddy.managedHosts) != 1 || caddy.managedHosts[0] != "caddytower.pacsnode.com" {
-		t.Fatalf("managed hosts = %#v", caddy.managedHosts)
+	if len(caddy.managedHosts) != 1 || caddy.managedHosts[0] != "caddytower.pacsnode.com|host|" {
+		t.Fatalf("managed route keys = %#v", caddy.managedHosts)
 	}
 	if cloudflareFactory.client.upsertCount != 1 {
 		t.Fatalf("upsertCount = %d", cloudflareFactory.client.upsertCount)
@@ -466,7 +466,66 @@ func TestCreateTCPProjectPublishesPortsWithoutCaddy(t *testing.T) {
 		t.Fatalf("published ports = %#v", docker.lastSpec.PublishedPorts)
 	}
 	if len(caddy.managedHosts) != 0 {
-		t.Fatalf("managed hosts = %#v", caddy.managedHosts)
+		t.Fatalf("managed route keys = %#v", caddy.managedHosts)
+	}
+}
+
+func TestCreateWebProjectPersistsMountsAndPathRoutes(t *testing.T) {
+	t.Parallel()
+
+	stateStore := openProjectsStore(t)
+	docker := &fakeDocker{}
+	caddy := &fakeCaddy{}
+	svc := New(config.Config{RootDomain: "example.com"}, stateStore, nil, docker, caddy, slog.New(slog.NewTextHandler(io.Discard, nil)))
+
+	project, err := svc.CreateWebProject(context.Background(), WebProjectInput{
+		Name:           "Lobbyalarm",
+		Slug:           "lobbyalarm",
+		ImageRef:       "ghcr.io/example/lobbyalarm-frontend:latest",
+		Subdomain:      "lobbyalarm",
+		InternalPort:   3000,
+		MountsText:     "/srv/lobbyalarm/uploads | /app/uploads | rw\n/srv/lobbyalarm/config.json | /app/config.json | ro",
+		HTTPRoutesText: "@domains | path_prefix | /api | strip\n@domains | host",
+	}, "")
+	if err != nil {
+		t.Fatalf("CreateWebProject() error = %v", err)
+	}
+
+	if len(docker.lastSpec.Mounts) != 2 {
+		t.Fatalf("mounts = %#v", docker.lastSpec.Mounts)
+	}
+	targets := []string{docker.lastSpec.Mounts[0].Target, docker.lastSpec.Mounts[1].Target}
+	if !(containsString(targets, "/app/uploads") && containsString(targets, "/app/config.json")) {
+		t.Fatalf("mount targets = %#v", docker.lastSpec.Mounts)
+	}
+	if len(caddy.lastRoutes) != 3 {
+		t.Fatalf("managed routes = %#v", caddy.lastRoutes)
+	}
+	var foundPathRoute, foundHostRoute bool
+	for _, route := range caddy.lastRoutes {
+		if route.MatchType == httpRouteMatchPathPrefix && route.MatchValue == "/api" && route.StripPrefix {
+			foundPathRoute = true
+		}
+		if route.Host == "lobbyalarm.example.com" && route.MatchType == httpRouteMatchHost {
+			foundHostRoute = true
+		}
+	}
+	if !foundPathRoute || !foundHostRoute {
+		t.Fatalf("managed routes = %#v", caddy.lastRoutes)
+	}
+
+	stored, _, err := svc.GetProject(context.Background(), project.ID)
+	if err != nil {
+		t.Fatalf("GetProject() error = %v", err)
+	}
+	if len(stored.Mounts) != 2 {
+		t.Fatalf("stored mounts = %#v", stored.Mounts)
+	}
+	if len(stored.HTTPRoutes) != 2 {
+		t.Fatalf("stored http routes = %#v", stored.HTTPRoutes)
+	}
+	if !strings.Contains(stored.HTTPRoutesText, "@domains | path_prefix | /api | strip") {
+		t.Fatalf("http routes text = %q", stored.HTTPRoutesText)
 	}
 }
 
@@ -738,7 +797,7 @@ func TestAddAndVerifyProjectDomain(t *testing.T) {
 		t.Fatalf("project domains = %#v / primary=%q", project.CustomDomains, project.PrimaryDomain)
 	}
 	if len(caddy.managedHosts) != 3 {
-		t.Fatalf("managed hosts = %#v", caddy.managedHosts)
+		t.Fatalf("managed route keys = %#v", caddy.managedHosts)
 	}
 
 	project, err = svc.VerifyProjectDomain(context.Background(), project.ID, project.CustomDomains[0].ID, "")
@@ -890,6 +949,7 @@ func (f *fakeDocker) Exec(context.Context, string, []string, []string, io.Writer
 
 type fakeCaddy struct {
 	managedHosts []string
+	lastRoutes    []caddyadmin.HTTPRoute
 	pingErr      error
 	rawConfig    json.RawMessage
 	getConfigErr error
@@ -907,8 +967,18 @@ func (f *fakeCaddy) GetConfig(context.Context) (json.RawMessage, error) {
 }
 
 func (f *fakeCaddy) ReconcileManagedRoutes(_ context.Context, routes []caddyadmin.HTTPRoute, managedHosts []string) (bool, error) {
+	f.lastRoutes = append([]caddyadmin.HTTPRoute(nil), routes...)
 	f.managedHosts = append([]string(nil), managedHosts...)
 	return true, nil
+}
+
+func containsString(values []string, target string) bool {
+	for _, value := range values {
+		if value == target {
+			return true
+		}
+	}
+	return false
 }
 
 type fakeCloudflareFactory struct {

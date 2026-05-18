@@ -27,7 +27,9 @@ type ProjectRecord struct {
 	CreatedAt                 time.Time
 	UpdatedAt                 time.Time
 	Env                       map[string]string
+	Mounts                    []ProjectMountRecord
 	Ports                     []ProjectPortRecord
+	HTTPRoutes                []ProjectHTTPRouteRecord
 }
 
 type GitHubInstallationRecord struct {
@@ -45,6 +47,28 @@ type ProjectPortRecord struct {
 	Proto         string
 	HostPort      int
 	ContainerPort int
+	CreatedAt     time.Time
+}
+
+type ProjectMountRecord struct {
+	ID        int64
+	ProjectID string
+	Type      string
+	Source    string
+	Target    string
+	ReadOnly  bool
+	CreatedAt time.Time
+}
+
+type ProjectHTTPRouteRecord struct {
+	ID            int64
+	ProjectID     string
+	Hostname      string
+	MatchType     string
+	MatchValue    string
+	StripPrefix   bool
+	RewritePrefix string
+	Priority      int
 	CreatedAt     time.Time
 }
 
@@ -206,6 +230,12 @@ func upsertProject(ctx context.Context, tx *sql.Tx, project ProjectRecord, updat
 	if err := replaceProjectPorts(ctx, tx, project.ID, project.Ports); err != nil {
 		return err
 	}
+	if err := replaceProjectMounts(ctx, tx, project.ID, project.Mounts); err != nil {
+		return err
+	}
+	if err := replaceProjectHTTPRoutes(ctx, tx, project.ID, project.HTTPRoutes); err != nil {
+		return err
+	}
 
 	return nil
 }
@@ -263,6 +293,16 @@ func (s *Store) GetProject(ctx context.Context, projectID string) (ProjectRecord
 		return ProjectRecord{}, err
 	}
 	project.Ports = ports
+	mounts, err := s.getProjectMounts(ctx, project.ID)
+	if err != nil {
+		return ProjectRecord{}, err
+	}
+	project.Mounts = mounts
+	httpRoutes, err := s.getProjectHTTPRoutes(ctx, project.ID)
+	if err != nil {
+		return ProjectRecord{}, err
+	}
+	project.HTTPRoutes = httpRoutes
 
 	return project, nil
 }
@@ -320,6 +360,16 @@ func (s *Store) GetProjectBySlug(ctx context.Context, slug string) (ProjectRecor
 		return ProjectRecord{}, err
 	}
 	project.Ports = ports
+	mounts, err := s.getProjectMounts(ctx, project.ID)
+	if err != nil {
+		return ProjectRecord{}, err
+	}
+	project.Mounts = mounts
+	httpRoutes, err := s.getProjectHTTPRoutes(ctx, project.ID)
+	if err != nil {
+		return ProjectRecord{}, err
+	}
+	project.HTTPRoutes = httpRoutes
 
 	return project, nil
 }
@@ -387,6 +437,16 @@ func (s *Store) ListProjects(ctx context.Context) ([]ProjectRecord, error) {
 			return nil, err
 		}
 		projects[i].Ports = ports
+		mounts, err := s.getProjectMounts(ctx, projects[i].ID)
+		if err != nil {
+			return nil, err
+		}
+		projects[i].Mounts = mounts
+		httpRoutes, err := s.getProjectHTTPRoutes(ctx, projects[i].ID)
+		if err != nil {
+			return nil, err
+		}
+		projects[i].HTTPRoutes = httpRoutes
 	}
 
 	return projects, nil
@@ -533,6 +593,82 @@ func (s *Store) getProjectPorts(ctx context.Context, projectID string) ([]Projec
 	return ports, rows.Err()
 }
 
+func (s *Store) getProjectMounts(ctx context.Context, projectID string) ([]ProjectMountRecord, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id, project_id, mount_type, source, target, read_only, created_at
+		FROM project_mounts
+		WHERE project_id = ?
+		ORDER BY target ASC, source ASC, id ASC
+	`, projectID)
+	if err != nil {
+		return nil, fmt.Errorf("query mounts for project %s: %w", projectID, err)
+	}
+	defer rows.Close()
+
+	var mounts []ProjectMountRecord
+	for rows.Next() {
+		var mount ProjectMountRecord
+		var readOnly int
+		if err := rows.Scan(
+			&mount.ID,
+			&mount.ProjectID,
+			&mount.Type,
+			&mount.Source,
+			&mount.Target,
+			&readOnly,
+			&mount.CreatedAt,
+		); err != nil {
+			return nil, fmt.Errorf("scan mount for project %s: %w", projectID, err)
+		}
+		mount.ReadOnly = readOnly == 1
+		mounts = append(mounts, mount)
+	}
+
+	return mounts, rows.Err()
+}
+
+func (s *Store) getProjectHTTPRoutes(ctx context.Context, projectID string) ([]ProjectHTTPRouteRecord, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id, project_id, hostname, match_type, match_value, strip_prefix, rewrite_prefix, priority, created_at
+		FROM project_http_routes
+		WHERE project_id = ?
+		ORDER BY priority ASC, hostname ASC, match_type ASC, match_value ASC, id ASC
+	`, projectID)
+	if err != nil {
+		return nil, fmt.Errorf("query http routes for project %s: %w", projectID, err)
+	}
+	defer rows.Close()
+
+	var routes []ProjectHTTPRouteRecord
+	for rows.Next() {
+		var route ProjectHTTPRouteRecord
+		var hostname sql.NullString
+		var matchValue sql.NullString
+		var rewritePrefix sql.NullString
+		var stripPrefix int
+		if err := rows.Scan(
+			&route.ID,
+			&route.ProjectID,
+			&hostname,
+			&route.MatchType,
+			&matchValue,
+			&stripPrefix,
+			&rewritePrefix,
+			&route.Priority,
+			&route.CreatedAt,
+		); err != nil {
+			return nil, fmt.Errorf("scan http route for project %s: %w", projectID, err)
+		}
+		route.Hostname = hostname.String
+		route.MatchValue = matchValue.String
+		route.StripPrefix = stripPrefix == 1
+		route.RewritePrefix = rewritePrefix.String
+		routes = append(routes, route)
+	}
+
+	return routes, rows.Err()
+}
+
 func replaceProjectPorts(ctx context.Context, tx *sql.Tx, projectID string, ports []ProjectPortRecord) error {
 	if _, err := tx.ExecContext(ctx, `DELETE FROM project_ports WHERE project_id = ?`, projectID); err != nil {
 		return fmt.Errorf("clear ports for project %s: %w", projectID, err)
@@ -559,6 +695,73 @@ func replaceProjectPorts(ctx context.Context, tx *sql.Tx, projectID string, port
 			VALUES (?, ?, ?, ?)
 		`, projectID, port.Proto, port.HostPort, port.ContainerPort); err != nil {
 			return fmt.Errorf("insert port %s/%d->%d for project %s: %w", port.Proto, port.HostPort, port.ContainerPort, projectID, err)
+		}
+	}
+
+	return nil
+}
+
+func replaceProjectMounts(ctx context.Context, tx *sql.Tx, projectID string, mounts []ProjectMountRecord) error {
+	if _, err := tx.ExecContext(ctx, `DELETE FROM project_mounts WHERE project_id = ?`, projectID); err != nil {
+		return fmt.Errorf("clear mounts for project %s: %w", projectID, err)
+	}
+
+	if len(mounts) == 0 {
+		return nil
+	}
+
+	sortedMounts := append([]ProjectMountRecord(nil), mounts...)
+	sort.Slice(sortedMounts, func(i, j int) bool {
+		if sortedMounts[i].Target != sortedMounts[j].Target {
+			return sortedMounts[i].Target < sortedMounts[j].Target
+		}
+		if sortedMounts[i].Source != sortedMounts[j].Source {
+			return sortedMounts[i].Source < sortedMounts[j].Source
+		}
+		return sortedMounts[i].Type < sortedMounts[j].Type
+	})
+
+	for _, mount := range sortedMounts {
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO project_mounts (project_id, mount_type, source, target, read_only)
+			VALUES (?, ?, ?, ?, ?)
+		`, projectID, mount.Type, mount.Source, mount.Target, boolToInt(mount.ReadOnly)); err != nil {
+			return fmt.Errorf("insert mount %s -> %s for project %s: %w", mount.Source, mount.Target, projectID, err)
+		}
+	}
+
+	return nil
+}
+
+func replaceProjectHTTPRoutes(ctx context.Context, tx *sql.Tx, projectID string, routes []ProjectHTTPRouteRecord) error {
+	if _, err := tx.ExecContext(ctx, `DELETE FROM project_http_routes WHERE project_id = ?`, projectID); err != nil {
+		return fmt.Errorf("clear http routes for project %s: %w", projectID, err)
+	}
+
+	if len(routes) == 0 {
+		return nil
+	}
+
+	sortedRoutes := append([]ProjectHTTPRouteRecord(nil), routes...)
+	sort.Slice(sortedRoutes, func(i, j int) bool {
+		if sortedRoutes[i].Priority != sortedRoutes[j].Priority {
+			return sortedRoutes[i].Priority < sortedRoutes[j].Priority
+		}
+		if sortedRoutes[i].Hostname != sortedRoutes[j].Hostname {
+			return sortedRoutes[i].Hostname < sortedRoutes[j].Hostname
+		}
+		if sortedRoutes[i].MatchType != sortedRoutes[j].MatchType {
+			return sortedRoutes[i].MatchType < sortedRoutes[j].MatchType
+		}
+		return sortedRoutes[i].MatchValue < sortedRoutes[j].MatchValue
+	})
+
+	for _, route := range sortedRoutes {
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO project_http_routes (project_id, hostname, match_type, match_value, strip_prefix, rewrite_prefix, priority)
+			VALUES (?, ?, ?, ?, ?, ?, ?)
+		`, projectID, nullableString(route.Hostname), route.MatchType, nullableString(route.MatchValue), boolToInt(route.StripPrefix), nullableString(route.RewritePrefix), route.Priority); err != nil {
+			return fmt.Errorf("insert http route %s/%s for project %s: %w", route.MatchType, route.MatchValue, projectID, err)
 		}
 	}
 
