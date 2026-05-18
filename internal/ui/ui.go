@@ -178,6 +178,7 @@ type HomePageData struct {
 	BackupsRetentionDays      int
 	BackupsScheduleUTC        string
 	BackupsIncludeEngineDumps bool
+	Requirements              RequirementsStatusData
 	VPSStatus                 VPSStatusData
 	ShowOnboarding            bool
 	OpenProjectDialog         bool
@@ -222,6 +223,22 @@ type VPSStatusData struct {
 	EmailConfigured bool
 	EmailTo         string
 	CheckedAt       string
+}
+
+type RequirementsStatusData struct {
+	Available    bool
+	ErrorMessage string
+	HealthyCount int
+	WarningCount int
+	FailureCount int
+	Checks       []RequirementCheckData
+}
+
+type RequirementCheckData struct {
+	Name    string
+	Status  string
+	Summary string
+	Detail  string
 }
 
 type SetupPageData struct {

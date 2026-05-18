@@ -48,6 +48,7 @@ const (
 var slugPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{1,62}$`)
 
 type dockerService interface {
+	Ping(context.Context) error
 	PullImage(context.Context, string) error
 	RecreateContainer(context.Context, dockerx.ContainerSpec) (dockerx.ContainerInspect, error)
 	InspectContainer(context.Context, string) (dockerx.ContainerInspect, error)
@@ -61,6 +62,7 @@ type dockerService interface {
 }
 
 type caddyService interface {
+	Ping(context.Context) error
 	ReconcileManagedRoutes(context.Context, []caddyadmin.HTTPRoute, []string) (bool, error)
 }
 
@@ -191,8 +193,24 @@ type projectDeployRequest struct {
 }
 
 type Dashboard struct {
-	Settings Settings
-	Projects []Project
+	Settings     Settings
+	Projects     []Project
+	Requirements RequirementsStatus
+}
+
+type RequirementsStatus struct {
+	Available    bool
+	HealthyCount int
+	WarningCount int
+	FailureCount int
+	Checks       []RequirementCheck
+}
+
+type RequirementCheck struct {
+	Name    string
+	Status  string
+	Summary string
+	Detail  string
 }
 
 type AuditLogEntry struct {
@@ -353,9 +371,162 @@ func (s *Service) Dashboard(ctx context.Context) (Dashboard, error) {
 	}
 
 	return Dashboard{
-		Settings: settings,
-		Projects: projects,
+		Settings:     settings,
+		Projects:     projects,
+		Requirements: s.requirementsStatus(ctx, projects),
 	}, nil
+}
+
+func (s *Service) requirementsStatus(ctx context.Context, projectList []Project) RequirementsStatus {
+	checks := make([]RequirementCheck, 0, 3)
+	dockerCheck := s.dockerRequirement(ctx)
+	checks = append(checks, dockerCheck)
+	checks = append(checks, s.caddyRequirement(ctx))
+	checks = append(checks, s.watchtowerRequirement(ctx, projectList, dockerCheck.Status == "ok"))
+
+	status := RequirementsStatus{
+		Available: true,
+		Checks:    checks,
+	}
+	for _, check := range checks {
+		switch check.Status {
+		case "ok":
+			status.HealthyCount++
+		case "warning":
+			status.WarningCount++
+		case "error":
+			status.FailureCount++
+		}
+	}
+	return status
+}
+
+func (s *Service) dockerRequirement(ctx context.Context) RequirementCheck {
+	check := RequirementCheck{
+		Name:   "Docker daemon",
+		Status: "error",
+	}
+	if s.docker == nil {
+		check.Summary = "Docker integration is not configured."
+		check.Detail = "CaddyTower needs Docker access for deploys, logs, restarts, and runtime inspection."
+		return check
+	}
+
+	checkCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	if err := s.docker.Ping(checkCtx); err != nil {
+		check.Summary = "CaddyTower cannot reach Docker right now."
+		check.Detail = err.Error()
+		return check
+	}
+
+	check.Status = "ok"
+	check.Summary = "Docker is reachable for deploys, logs, and container control."
+	check.Detail = "Project lifecycle actions can talk to the Docker daemon."
+	return check
+}
+
+func (s *Service) caddyRequirement(ctx context.Context) RequirementCheck {
+	check := RequirementCheck{
+		Name:   "Shared Caddy admin API",
+		Status: "error",
+	}
+	adminURL := strings.TrimSpace(s.cfg.CaddyAdminURL)
+	if adminURL == "" {
+		check.Summary = "The Caddy admin URL is not configured."
+		check.Detail = "Set CADDYTOWER_CADDY_ADMIN_URL so CaddyTower can update shared routes."
+		return check
+	}
+	if s.caddy == nil {
+		check.Summary = "Caddy admin integration is not configured."
+		check.Detail = "CaddyTower needs the shared Caddy admin API to publish and update routes."
+		return check
+	}
+
+	checkCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	if err := s.caddy.Ping(checkCtx); err != nil {
+		check.Summary = "CaddyTower cannot reach the shared Caddy admin API."
+		check.Detail = err.Error()
+		return check
+	}
+
+	check.Status = "ok"
+	check.Summary = "Shared Caddy routing is reachable for route reconciliation."
+	check.Detail = adminURL
+	return check
+}
+
+func (s *Service) watchtowerRequirement(ctx context.Context, projectList []Project, dockerHealthy bool) RequirementCheck {
+	autoUpdateProjects := 0
+	for _, project := range projectList {
+		if project.WatchtowerEnabled {
+			autoUpdateProjects++
+		}
+	}
+
+	check := RequirementCheck{
+		Name:   "Watchtower auto-updater",
+		Status: "warning",
+	}
+	if s.docker == nil {
+		check.Summary = "Watchtower could not be checked because Docker integration is missing."
+		check.Detail = "Automatic image refresh depends on Docker access."
+		return check
+	}
+	if !dockerHealthy {
+		check.Summary = "Watchtower could not be checked because Docker is unavailable."
+		check.Detail = "Restore Docker access first, then re-check the updater container."
+		return check
+	}
+
+	checkCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	inspect, err := s.docker.InspectContainer(checkCtx, "watchtower")
+	if err != nil {
+		if autoUpdateProjects > 0 {
+			check.Summary = fmt.Sprintf("Watchtower is missing while %d project%s use automatic image updates.", autoUpdateProjects, plural(autoUpdateProjects))
+		} else {
+			check.Summary = "Watchtower is not running."
+		}
+		check.Detail = "The dashboard still works, but automatic image refresh is unavailable until the watchtower container is recreated."
+		return check
+	}
+	if !inspect.Running {
+		check.Summary = "Watchtower exists but is not running."
+		check.Detail = "Start or recreate the watchtower container so automatic image refresh can resume."
+		return check
+	}
+	if !envContainsPrefix(inspect.Env, "DOCKER_API_VERSION=") {
+		check.Summary = "Watchtower is running, but Docker API compatibility is not pinned."
+		check.Detail = "Set DOCKER_API_VERSION on the watchtower container to avoid restart loops on newer Docker daemons."
+		return check
+	}
+
+	check.Status = "ok"
+	if autoUpdateProjects > 0 {
+		check.Summary = fmt.Sprintf("Watchtower is running for %d auto-update project%s.", autoUpdateProjects, plural(autoUpdateProjects))
+	} else {
+		check.Summary = "Watchtower is running and ready for projects that opt into automatic image refresh."
+	}
+	check.Detail = "Container name: watchtower"
+	return check
+}
+
+func envContainsPrefix(values []string, prefix string) bool {
+	for _, value := range values {
+		if strings.HasPrefix(value, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+func plural(count int) string {
+	if count == 1 {
+		return ""
+	}
+	return "s"
 }
 
 func (s *Service) AuditLogs(ctx context.Context, filter string, limit int) ([]AuditLogEntry, error) {

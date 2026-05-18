@@ -79,6 +79,9 @@ func TestRouterServesHome(t *testing.T) {
 	if !strings.Contains(rec.Body.String(), "VPS status") || !strings.Contains(rec.Body.String(), "Status unavailable.") {
 		t.Fatalf("body missing dashboard vps status content: %q", rec.Body.String())
 	}
+	if !strings.Contains(rec.Body.String(), "Vital requirements") || !strings.Contains(rec.Body.String(), "Requirement checks unavailable.") {
+		t.Fatalf("body missing dashboard requirement status content: %q", rec.Body.String())
+	}
 	if !strings.Contains(rec.Body.String(), "GitHub import works today") || strings.Contains(rec.Body.String(), "What’s coming") || strings.Contains(rec.Body.String(), "import flow next") || strings.Contains(rec.Body.String(), "planned onboarding") {
 		t.Fatalf("body has stale github onboarding copy: %q", rec.Body.String())
 	}
@@ -1367,6 +1370,7 @@ type serverTestDocker struct {
 	restartCount *int
 }
 
+func (serverTestDocker) Ping(context.Context) error              { return nil }
 func (serverTestDocker) PullImage(context.Context, string) error { return nil }
 func (serverTestDocker) RecreateContainer(_ context.Context, spec dockerx.ContainerSpec) (dockerx.ContainerInspect, error) {
 	return dockerx.ContainerInspect{Name: spec.Name, Running: true, ImageID: "sha256:test-image"}, nil
@@ -1410,6 +1414,7 @@ func (serverTestDocker) Exec(context.Context, string, []string, []string, io.Wri
 
 type serverTestCaddy struct{}
 
+func (serverTestCaddy) Ping(context.Context) error { return nil }
 func (serverTestCaddy) ReconcileManagedRoutes(context.Context, []caddyadmin.HTTPRoute, []string) (bool, error) {
 	return true, nil
 }

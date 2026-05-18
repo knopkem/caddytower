@@ -101,6 +101,56 @@
       <section class="card section">
         <div class="card-header">
           <div class="card-title">
+            <h2>Vital requirements</h2>
+            <p>These checks cover the host integrations that keep deploys, routing, and automatic refresh working.</p>
+          </div>
+          <details class="help">
+            <summary>What is checked</summary>
+            <div class="help-body">
+              <p>Docker powers deploys and runtime actions, the shared Caddy admin API applies routes, and Watchtower covers automatic image refresh.</p>
+            </div>
+          </details>
+        </div>
+        {{if .Requirements.Available}}
+        <div class="summary-grid">
+          <article class="summary-card">
+            <h3>Healthy</h3>
+            <p>{{.Requirements.HealthyCount}} / {{len .Requirements.Checks}} checks are green.</p>
+          </article>
+          <article class="summary-card">
+            <h3>Warnings</h3>
+            <p>{{.Requirements.WarningCount}} item{{if ne .Requirements.WarningCount 1}}s{{end}} need attention.</p>
+          </article>
+          <article class="summary-card">
+            <h3>Blocking issues</h3>
+            <p>{{.Requirements.FailureCount}} critical failure{{if ne .Requirements.FailureCount 1}}s{{end}}.</p>
+          </article>
+        </div>
+        <div class="checklist requirement-list">
+          {{range .Requirements.Checks}}
+          <article class="check-item requirement-item is-{{.Status}}">
+            <div>
+              <div class="requirement-header">
+                <h3>{{.Name}}</h3>
+                <span class="status-pill is-{{.Status}}">{{.Status}}</span>
+              </div>
+              <p>{{.Summary}}</p>
+              {{if .Detail}}<p class="muted requirement-detail">{{.Detail}}</p>{{end}}
+            </div>
+          </article>
+          {{end}}
+        </div>
+        {{else}}
+        <div class="empty-state">
+          <p><strong>Requirement checks unavailable.</strong></p>
+          <p>{{.Requirements.ErrorMessage}}</p>
+        </div>
+        {{end}}
+      </section>
+
+      <section class="card section">
+        <div class="card-header">
+          <div class="card-title">
             <h2>VPS status</h2>
             <p>Keep RAM and disk headroom visible from the dashboard while you operate projects.</p>
           </div>

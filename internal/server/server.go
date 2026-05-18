@@ -253,6 +253,7 @@ func (s *Server) renderDashboard(w http.ResponseWriter, r *http.Request, current
 		BackupsRetentionDays:      s.cfg.BackupsRetentionDays,
 		BackupsScheduleUTC:        s.cfg.BackupsScheduleUTC,
 		BackupsIncludeEngineDumps: s.cfg.BackupsIncludeEngineDumps,
+		Requirements:              commonData.requirements,
 		VPSStatus:                 s.vpsStatusData(),
 		ShowOnboarding:            r.URL.Query().Get("welcome") == "1",
 		OpenProjectDialog:         r.URL.Query().Get("open") == "project",
@@ -273,16 +274,18 @@ func (s *Server) renderDashboard(w http.ResponseWriter, r *http.Request, current
 }
 
 type dashboardData struct {
-	settings ui.SettingsFormData
-	projects []ui.ProjectListItem
-	backups  []ui.BackupItem
+	settings     ui.SettingsFormData
+	projects     []ui.ProjectListItem
+	backups      []ui.BackupItem
+	requirements ui.RequirementsStatusData
 }
 
 func (s *Server) loadDashboardData(ctx context.Context) (dashboardData, error) {
 	data := dashboardData{
-		settings: ui.SettingsFormData{},
-		projects: []ui.ProjectListItem{},
-		backups:  []ui.BackupItem{},
+		settings:     ui.SettingsFormData{},
+		projects:     []ui.ProjectListItem{},
+		backups:      []ui.BackupItem{},
+		requirements: ui.RequirementsStatusData{Available: false, ErrorMessage: "Requirement checks appear when Docker and shared Caddy management are enabled."},
 	}
 	if s.projects != nil {
 		dashboard, err := s.projects.Dashboard(ctx)
@@ -299,6 +302,7 @@ func (s *Server) loadDashboardData(ctx context.Context) (dashboardData, error) {
 		for _, project := range dashboard.Projects {
 			data.projects = append(data.projects, projectListItem(project))
 		}
+		data.requirements = requirementsData(dashboard.Requirements)
 	}
 	if s.backups != nil {
 		snapshots, err := s.backups.ListSnapshots()
@@ -314,6 +318,25 @@ func (s *Server) loadDashboardData(ctx context.Context) (dashboardData, error) {
 		}
 	}
 	return data, nil
+}
+
+func requirementsData(status projects.RequirementsStatus) ui.RequirementsStatusData {
+	data := ui.RequirementsStatusData{
+		Available:    status.Available,
+		HealthyCount: status.HealthyCount,
+		WarningCount: status.WarningCount,
+		FailureCount: status.FailureCount,
+		Checks:       make([]ui.RequirementCheckData, 0, len(status.Checks)),
+	}
+	for _, check := range status.Checks {
+		data.Checks = append(data.Checks, ui.RequirementCheckData{
+			Name:    check.Name,
+			Status:  check.Status,
+			Summary: check.Summary,
+			Detail:  check.Detail,
+		})
+	}
+	return data
 }
 
 func (s *Server) handleSetupForm(w http.ResponseWriter, r *http.Request) {

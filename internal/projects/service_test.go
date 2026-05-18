@@ -140,6 +140,66 @@ func TestSaveSettingsReconcilesAdminRouteAndDNS(t *testing.T) {
 	}
 }
 
+func TestDashboardIncludesRequirementChecks(t *testing.T) {
+	t.Parallel()
+
+	stateStore := openProjectsStore(t)
+	docker := &fakeDocker{
+		inspectByName: map[string]dockerx.ContainerInspect{
+			"watchtower": {
+				Name:    "watchtower",
+				Running: true,
+				Env:     []string{"DOCKER_API_VERSION=1.44"},
+			},
+		},
+	}
+	caddy := &fakeCaddy{}
+	svc := New(config.Config{RootDomain: "example.com", CaddyAdminURL: "http://shared-caddy:2019"}, stateStore, nil, docker, caddy, slog.New(slog.NewTextHandler(io.Discard, nil)))
+
+	dashboard, err := svc.Dashboard(context.Background())
+	if err != nil {
+		t.Fatalf("Dashboard() error = %v", err)
+	}
+
+	if !dashboard.Requirements.Available {
+		t.Fatal("expected requirements to be available")
+	}
+	if dashboard.Requirements.HealthyCount != 3 || dashboard.Requirements.WarningCount != 0 || dashboard.Requirements.FailureCount != 0 {
+		t.Fatalf("unexpected requirement counts: %#v", dashboard.Requirements)
+	}
+}
+
+func TestDashboardFlagsBrokenRequirements(t *testing.T) {
+	t.Parallel()
+
+	stateStore := openProjectsStore(t)
+	docker := &fakeDocker{
+		pingErr: errors.New("ping docker daemon: permission denied"),
+	}
+	caddy := &fakeCaddy{
+		pingErr: errors.New("send ping request: dial tcp shared-caddy:2019: connect: connection refused"),
+	}
+	svc := New(config.Config{RootDomain: "example.com", CaddyAdminURL: "http://shared-caddy:2019"}, stateStore, nil, docker, caddy, slog.New(slog.NewTextHandler(io.Discard, nil)))
+
+	dashboard, err := svc.Dashboard(context.Background())
+	if err != nil {
+		t.Fatalf("Dashboard() error = %v", err)
+	}
+
+	if dashboard.Requirements.FailureCount != 2 || dashboard.Requirements.WarningCount != 1 {
+		t.Fatalf("unexpected requirement counts: %#v", dashboard.Requirements)
+	}
+	if dashboard.Requirements.Checks[0].Summary != "CaddyTower cannot reach Docker right now." {
+		t.Fatalf("docker summary = %q", dashboard.Requirements.Checks[0].Summary)
+	}
+	if dashboard.Requirements.Checks[1].Summary != "CaddyTower cannot reach the shared Caddy admin API." {
+		t.Fatalf("caddy summary = %q", dashboard.Requirements.Checks[1].Summary)
+	}
+	if dashboard.Requirements.Checks[2].Summary != "Watchtower could not be checked because Docker is unavailable." {
+		t.Fatalf("watchtower summary = %q", dashboard.Requirements.Checks[2].Summary)
+	}
+}
+
 func TestSaveGitHubSettingsPersistsEncryptedRuntimeConfig(t *testing.T) {
 	t.Parallel()
 
@@ -697,7 +757,13 @@ type fakeDocker struct {
 	logContent    string
 	containers    []dockerx.ContainerSummary
 	inspectByName map[string]dockerx.ContainerInspect
+	inspectErrs   map[string]error
 	statsByName   map[string]dockerx.ContainerStatsSnapshot
+	pingErr       error
+}
+
+func (f *fakeDocker) Ping(context.Context) error {
+	return f.pingErr
 }
 
 func (f *fakeDocker) PullImage(_ context.Context, image string) error {
@@ -717,6 +783,9 @@ func (f *fakeDocker) RecreateContainer(_ context.Context, spec dockerx.Container
 	}, nil
 }
 func (f *fakeDocker) InspectContainer(_ context.Context, name string) (dockerx.ContainerInspect, error) {
+	if err, ok := f.inspectErrs[name]; ok {
+		return dockerx.ContainerInspect{}, err
+	}
 	if inspect, ok := f.inspectByName[name]; ok {
 		return inspect, nil
 	}
@@ -751,6 +820,11 @@ func (f *fakeDocker) Exec(context.Context, string, []string, []string, io.Writer
 
 type fakeCaddy struct {
 	managedHosts []string
+	pingErr      error
+}
+
+func (f *fakeCaddy) Ping(context.Context) error {
+	return f.pingErr
 }
 
 func (f *fakeCaddy) ReconcileManagedRoutes(_ context.Context, routes []caddyadmin.HTTPRoute, managedHosts []string) (bool, error) {

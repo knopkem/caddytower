@@ -552,6 +552,24 @@ th {
   text-transform: capitalize;
 }
 
+.status-pill.is-ok {
+  border-color: rgba(134, 239, 172, 0.34);
+  background: rgba(20, 83, 45, 0.24);
+  color: #bbf7d0;
+}
+
+.status-pill.is-warning {
+  border-color: rgba(252, 211, 77, 0.35);
+  background: rgba(120, 53, 15, 0.24);
+  color: #fde68a;
+}
+
+.status-pill.is-error {
+  border-color: rgba(248, 113, 113, 0.32);
+  background: rgba(127, 29, 29, 0.24);
+  color: #fecaca;
+}
+
 .empty-state {
   padding: 18px;
   border: 1px dashed var(--border);
@@ -823,6 +841,41 @@ meter {
 .check-item.is-done {
   border-color: rgba(134, 239, 172, 0.28);
   background: rgba(20, 83, 45, 0.18);
+}
+
+.requirement-list {
+  margin-top: 16px;
+}
+
+.requirement-item.is-ok {
+  border-color: rgba(134, 239, 172, 0.24);
+}
+
+.requirement-item.is-warning {
+  border-color: rgba(252, 211, 77, 0.28);
+}
+
+.requirement-item.is-error {
+  border-color: rgba(248, 113, 113, 0.26);
+  background: rgba(127, 29, 29, 0.12);
+}
+
+.requirement-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 6px;
+}
+
+.requirement-header h3 {
+  margin: 0;
+}
+
+.requirement-detail {
+  margin-top: 8px;
+  word-break: break-word;
 }
 
 .check-item-badge {

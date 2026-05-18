@@ -36,6 +36,17 @@ func TestRenderHome(t *testing.T) {
 			CaddyAdminURL: "http://shared-caddy:2019",
 			MasterKeySet:  true,
 		},
+		Requirements: RequirementsStatusData{
+			Available:    true,
+			HealthyCount: 2,
+			WarningCount: 1,
+			FailureCount: 0,
+			Checks: []RequirementCheckData{
+				{Name: "Docker daemon", Status: "ok", Summary: "Docker is reachable for deploys, logs, and container control."},
+				{Name: "Shared Caddy admin API", Status: "ok", Summary: "Shared Caddy routing is reachable for route reconciliation."},
+				{Name: "Watchtower auto-updater", Status: "warning", Summary: "Watchtower is not running."},
+			},
+		},
 		EffectivePublicBaseURL: "https://caddytower.example.com",
 		PublicURLReady:         true,
 		PublicAdminHost:        "caddytower.example.com",
@@ -57,6 +68,9 @@ func TestRenderHome(t *testing.T) {
 	}
 	if !strings.Contains(body, "VPS status") {
 		t.Fatalf("rendered home missing vps status card: %q", body)
+	}
+	if !strings.Contains(body, "Vital requirements") || !strings.Contains(body, "Docker daemon") || !strings.Contains(body, "Watchtower auto-updater") {
+		t.Fatalf("rendered home missing requirement checks: %q", body)
 	}
 	for _, snippet := range []string{"Guided start", "Manual project", "Create manual project", "Adopt existing services", "adoption from Settings", "adopt running services"} {
 		if strings.Contains(body, snippet) {
