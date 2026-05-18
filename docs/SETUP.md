@@ -156,7 +156,7 @@ app database than in environment variables.
 ### Root domain
 
 The base domain CaddyTower manages for generated app hostnames, such as
-`api.example.com` or `cameos.example.com`.
+`api.example.com` or `editor.example.com`.
 
 ### Origin hostname
 

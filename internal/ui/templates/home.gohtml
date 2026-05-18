@@ -580,7 +580,7 @@
             </label>
             <label class="field">
               <span>Bind mounts</span>
-              <textarea name="mounts_text" rows="4" placeholder="/srv/books-data | /app/data | rw&#10;/srv/totala/nginx.conf | /etc/nginx/conf.d/default.conf | ro">{{.CreateForm.MountsText}}</textarea>
+              <textarea name="mounts_text" rows="4" placeholder="/srv/app-data | /app/data | rw&#10;/srv/web/nginx.conf | /etc/nginx/conf.d/default.conf | ro">{{.CreateForm.MountsText}}</textarea>
               <small class="field-hint">Optional. One mount per line in <span class="inline-code">source | target | rw|ro</span> format.</small>
             </label>
             <fieldset data-web-fields>

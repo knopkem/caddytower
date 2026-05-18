@@ -91,45 +91,46 @@ routes stay in place. Managed routes are now matched by **host + route matcher**
 instead of host only, so one managed `/api` split route no longer causes every
 other route on the same host to be replaced.
 
-## 6a. Migration recipes for the current VPS
+## 6a. Migration recipes by workload shape
 
-### cameos
+### Single-container site
 
 - Create a normal **web** project.
 - Use the current image ref and internal port.
-- Leave **Bind mounts** empty.
+- Leave **Bind mounts** empty unless the app reads a host file or persistent
+  data directory.
 - Leave **HTTP route rules** empty or keep the default catch-all host route.
 
-### books
+### App with persistent host data
 
-- Create a **web** project for `books-app`.
+- Create a **web** project.
 - Copy the current image, subdomain, and port.
 - Add the persistent data bind mount, for example:
 
   ```text
-  /home/ubuntu/book-search-server/packages/server/data | /app/packages/server/data | rw
+  /srv/app/data | /app/data | rw
   ```
 
 - Start with the default catch-all host route.
 
-### totala
+### App with a mounted web-server config
 
-- Recreate `totala-web` as a **web** project.
-- Mount the Nginx config that currently wires `/ws` to the companion service:
+- Recreate the public-facing service as a **web** project.
+- Mount the config file the container already expects, for example:
 
   ```text
-  /home/ubuntu/book-search-server/deploy/totala.nginx.conf | /etc/nginx/conf.d/default.conf | ro
+  /srv/app/nginx.conf | /etc/nginx/conf.d/default.conf | ro
   ```
 
-- Recreate the companion netserver as a separate **UDP/TCP** project if you want
-  CaddyTower to manage it too.
+- Recreate any companion TCP/UDP service as a separate managed project if you
+  want CaddyTower to manage that process too.
 - Keep the web project on the default catch-all host route unless you later move
-  the websocket split into explicit CaddyTower HTTP rules.
+  the split into explicit CaddyTower HTTP rules.
 
-### lobbyalarm
+### Shared-host frontend plus API split
 
-- Recreate the frontend as a **web** project and the backend/database as separate
-  managed services as needed.
+- Recreate the frontend as a **web** project and the backend/database as
+  separate managed services as needed.
 - Keep the frontend container on the default catch-all host route.
 - Add the backend split on the same host with:
 

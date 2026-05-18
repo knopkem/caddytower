@@ -102,10 +102,10 @@ func TestRenderSettings(t *testing.T) {
 			CaddyAdminURL: "http://shared-caddy:2019",
 			MasterKeySet:  true,
 		},
-		EffectiveRootDomain:    "pacsnode.com",
-		EffectivePublicBaseURL: "https://caddytower.pacsnode.com",
-		PublicAdminHost:        "caddytower.pacsnode.com",
-		SuggestedPublicBaseURL: "https://caddytower.pacsnode.com",
+		EffectiveRootDomain:    "example.com",
+		EffectivePublicBaseURL: "https://caddytower.example.com",
+		PublicAdminHost:        "caddytower.example.com",
+		SuggestedPublicBaseURL: "https://caddytower.example.com",
 		ControllerUpdate: ControllerUpdateData{
 			Checked:          true,
 			CurrentVersion:   "v1.0.0",
@@ -134,14 +134,14 @@ func TestRenderSettings(t *testing.T) {
 			LiveRouteCount:    3,
 			Routes: []CaddyRouteDiagnosticData{
 				{
-					Host:                     "caddytower.pacsnode.com",
+					Host:                     "caddytower.example.com",
 					Status:                   "ok",
 					ExpectedUpstreamsSummary: "caddytower:8080",
 					LiveUpstreamsSummary:     "caddytower:8080",
 					Detail:                   "Live route matches the expected upstream.",
 				},
 				{
-					Host:                     "demo.pacsnode.com",
+					Host:                     "demo.example.com",
 					Status:                   "warning",
 					ExpectedUpstreamsSummary: "demo:3000",
 					LiveUpstreamsSummary:     "old-demo:3000",
@@ -173,7 +173,7 @@ func TestRenderSettings(t *testing.T) {
 	if !strings.Contains(body, "Controller runtime") || !strings.Contains(body, "/var/lib/caddytower/state.db") {
 		t.Fatalf("rendered settings missing runtime summary content: %q", body)
 	}
-	if !strings.Contains(body, "Restart CaddyTower") || !strings.Contains(body, "https://caddytower.pacsnode.com") || !strings.Contains(body, "caddytower.pacsnode.com") {
+	if !strings.Contains(body, "Restart CaddyTower") || !strings.Contains(body, "https://caddytower.example.com") || !strings.Contains(body, "caddytower.example.com") {
 		t.Fatalf("rendered settings missing restart or composed-url guidance: %q", body)
 	}
 	if !strings.Contains(body, "Optional: automatic DNS updates with Cloudflare") || !strings.Contains(body, "CaddyTower still works without Cloudflare") {
@@ -185,7 +185,7 @@ func TestRenderSettings(t *testing.T) {
 	if !strings.Contains(body, "Latest release") || !strings.Contains(body, "Update and restart") || !strings.Contains(body, "A newer release is available.") {
 		t.Fatalf("rendered settings missing controller update UI: %q", body)
 	}
-	if !strings.Contains(body, "Shared Caddy diagnostics") || !strings.Contains(body, "demo.pacsnode.com") || !strings.Contains(body, "Raw live Caddy config") {
+	if !strings.Contains(body, "Shared Caddy diagnostics") || !strings.Contains(body, "demo.example.com") || !strings.Contains(body, "Raw live Caddy config") {
 		t.Fatalf("rendered settings missing shared caddy diagnostics UI: %q", body)
 	}
 	if !strings.Contains(body, "Restart required") || !strings.Contains(body, "Restart now") {

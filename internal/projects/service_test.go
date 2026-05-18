@@ -92,10 +92,10 @@ func TestSaveSettingsPreservesInstallerRootDomain(t *testing.T) {
 
 	stateStore := openProjectsStore(t)
 	docker := &fakeDocker{}
-	svc := New(config.Config{RootDomain: "pacsnode.com"}, stateStore, nil, docker, &fakeCaddy{}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	svc := New(config.Config{RootDomain: "example.com"}, stateStore, nil, docker, &fakeCaddy{}, slog.New(slog.NewTextHandler(io.Discard, nil)))
 
 	if err := svc.SaveSettings(context.Background(), SettingsInput{
-		OriginHostname: "vps212846.vps.ovh.ca",
+		OriginHostname: "server.example.com",
 	}, ""); err != nil {
 		t.Fatalf("SaveSettings() error = %v", err)
 	}
@@ -104,7 +104,7 @@ func TestSaveSettingsPreservesInstallerRootDomain(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Dashboard() error = %v", err)
 	}
-	if dashboard.Settings.RootDomain != "pacsnode.com" {
+	if dashboard.Settings.RootDomain != "example.com" {
 		t.Fatalf("root domain = %q, want installer fallback", dashboard.Settings.RootDomain)
 	}
 }
@@ -121,7 +121,7 @@ func TestSaveSettingsReconcilesAdminRouteAndDNS(t *testing.T) {
 	docker := &fakeDocker{}
 	caddy := &fakeCaddy{}
 	cloudflareFactory := &fakeCloudflareFactory{}
-	svc := New(config.Config{RootDomain: "pacsnode.com"}, stateStore, secretSvc, docker, caddy, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	svc := New(config.Config{RootDomain: "example.com"}, stateStore, secretSvc, docker, caddy, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	svc.newCloudflare = cloudflareFactory.New
 
 	if err := svc.SaveSettings(context.Background(), SettingsInput{
@@ -133,7 +133,7 @@ func TestSaveSettingsReconcilesAdminRouteAndDNS(t *testing.T) {
 		t.Fatalf("SaveSettings() error = %v", err)
 	}
 
-	if len(caddy.managedHosts) != 1 || caddy.managedHosts[0] != "caddytower.pacsnode.com|host|" {
+	if len(caddy.managedHosts) != 1 || caddy.managedHosts[0] != "caddytower.example.com|host|" {
 		t.Fatalf("managed route keys = %#v", caddy.managedHosts)
 	}
 	if cloudflareFactory.client.upsertCount != 1 {
@@ -479,12 +479,12 @@ func TestCreateWebProjectPersistsMountsAndPathRoutes(t *testing.T) {
 	svc := New(config.Config{RootDomain: "example.com"}, stateStore, nil, docker, caddy, slog.New(slog.NewTextHandler(io.Discard, nil)))
 
 	project, err := svc.CreateWebProject(context.Background(), WebProjectInput{
-		Name:           "Lobbyalarm",
-		Slug:           "lobbyalarm",
-		ImageRef:       "ghcr.io/example/lobbyalarm-frontend:latest",
-		Subdomain:      "lobbyalarm",
+		Name:           "Workspace",
+		Slug:           "workspace",
+		ImageRef:       "ghcr.io/example/workspace-frontend:latest",
+		Subdomain:      "workspace",
 		InternalPort:   3000,
-		MountsText:     "/srv/lobbyalarm/uploads | /app/uploads | rw\n/srv/lobbyalarm/config.json | /app/config.json | ro",
+		MountsText:     "/srv/workspace/uploads | /app/uploads | rw\n/srv/workspace/config.json | /app/config.json | ro",
 		HTTPRoutesText: "@domains | path_prefix | /api | strip\n@domains | host",
 	}, "")
 	if err != nil {
@@ -506,7 +506,7 @@ func TestCreateWebProjectPersistsMountsAndPathRoutes(t *testing.T) {
 		if route.MatchType == httpRouteMatchPathPrefix && route.MatchValue == "/api" && route.StripPrefix {
 			foundPathRoute = true
 		}
-		if route.Host == "lobbyalarm.example.com" && route.MatchType == httpRouteMatchHost {
+		if route.Host == "workspace.example.com" && route.MatchType == httpRouteMatchHost {
 			foundHostRoute = true
 		}
 	}

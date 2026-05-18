@@ -140,10 +140,10 @@ func TestMergeManagedRoutesPreservesUnmanagedHosts(t *testing.T) {
 
 	merged, err := MergeManagedRoutes(current, []HTTPRoute{
 		{Host: "demo.example.com", Upstreams: []string{"demo:3000"}},
-		{Host: "cameos.example.com", Upstreams: []string{"cameos:8080"}},
+		{Host: "editor.example.com", Upstreams: []string{"editor:8080"}},
 	}, []string{
 		RouteKey(HTTPRoute{Host: "demo.example.com"}),
-		RouteKey(HTTPRoute{Host: "cameos.example.com"}),
+		RouteKey(HTTPRoute{Host: "editor.example.com"}),
 	})
 	if err != nil {
 		t.Fatalf("MergeManagedRoutes() error = %v", err)

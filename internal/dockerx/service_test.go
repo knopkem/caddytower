@@ -146,7 +146,7 @@ func TestPullImageDrainsReader(t *testing.T) {
 
 	fake := &fakeAPIClient{
 		imagePullFn: func(context.Context, string, image.PullOptions) (io.ReadCloser, error) {
-			return io.NopCloser(strings.NewReader("{\"status\":\"Pulling from knopkem/cameos\"}\n{\"status\":\"done\"}\n")), nil
+			return io.NopCloser(strings.NewReader("{\"status\":\"Pulling from example/sample-app\"}\n{\"status\":\"done\"}\n")), nil
 		},
 	}
 
@@ -166,7 +166,7 @@ func TestPullImageReturnsStreamError(t *testing.T) {
 	}
 
 	service := New(fake)
-	err := service.PullImage(context.Background(), "ghcr.io/knopkem/cameos:latest")
+	err := service.PullImage(context.Background(), "ghcr.io/example/sample-app:latest")
 	if err == nil {
 		t.Fatal("expected pull error")
 	}

@@ -1175,7 +1175,7 @@ func TestSettingsPageUsesInstallerRootDomainForGuidance(t *testing.T) {
 		PublicBaseURL: "http://localhost:8080",
 		DataDir:       t.TempDir(),
 		CaddyAdminURL: "http://shared-caddy:2019",
-		RootDomain:    "pacsnode.com",
+		RootDomain:    "example.com",
 	}, stateStore, nil, serverTestDocker{}, nil, newNoopLogger())
 
 	srv := New(config.Config{
@@ -1183,7 +1183,7 @@ func TestSettingsPageUsesInstallerRootDomainForGuidance(t *testing.T) {
 		PublicBaseURL: "http://localhost:8080",
 		DataDir:       t.TempDir(),
 		CaddyAdminURL: "http://shared-caddy:2019",
-		RootDomain:    "pacsnode.com",
+		RootDomain:    "example.com",
 	}, webUI, newNoopLogger(), version.Info{Version: "test"}, stateStore, authService, projectService, nil, nil)
 
 	req := httptest.NewRequest(http.MethodGet, "/settings", nil)
@@ -1197,10 +1197,10 @@ func TestSettingsPageUsesInstallerRootDomainForGuidance(t *testing.T) {
 	}
 
 	body := rec.Body.String()
-	if !strings.Contains(body, "https://caddytower.pacsnode.com") {
+	if !strings.Contains(body, "https://caddytower.example.com") {
 		t.Fatalf("settings page missing suggested installer-based URL: %q", body)
 	}
-	if !strings.Contains(body, `name="root_domain" value="pacsnode.com"`) {
+	if !strings.Contains(body, `name="root_domain" value="example.com"`) {
 		t.Fatalf("settings page missing installer root domain fallback: %q", body)
 	}
 }
