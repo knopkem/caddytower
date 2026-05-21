@@ -17,7 +17,7 @@ import (
 	"caddytower/internal/secrets"
 	"caddytower/internal/store"
 
-	_ "github.com/go-sql-driver/mysql"
+	mysql "github.com/go-sql-driver/mysql"
 	_ "github.com/jackc/pgx/v5/stdlib"
 )
 
@@ -509,7 +509,7 @@ func (s *Service) waitForReady(ctx context.Context, engine, password string) err
 			}
 		case engineMariaDB:
 			var db *sql.DB
-			db, err = sql.Open("mysql", fmt.Sprintf("root:%s@tcp(%s:%d)/mysql?parseTime=true", urlQueryEscape(password), engineHost(engine), enginePort(engine)))
+			db, err = sql.Open("mysql", mariaDBDSN("root", password, engineHost(engine), enginePort(engine), "mysql"))
 			if err == nil {
 				err = db.PingContext(ctx)
 				_ = db.Close()
@@ -546,7 +546,7 @@ func (s *Service) openMariaDBAdmin(ctx context.Context) (*sql.DB, error) {
 	if err != nil {
 		return nil, err
 	}
-	db, err := sql.Open("mysql", fmt.Sprintf("root:%s@tcp(%s:%d)/mysql?parseTime=true", urlQueryEscape(password), engineHost(engineMariaDB), enginePort(engineMariaDB)))
+	db, err := sql.Open("mysql", mariaDBDSN("root", password, engineHost(engineMariaDB), enginePort(engineMariaDB), "mysql"))
 	if err != nil {
 		return nil, fmt.Errorf("open mariadb admin db: %w", err)
 	}
@@ -646,12 +646,28 @@ func limitedIdentifier(raw, engine string) string {
 }
 
 func randomPassword(length int) string {
-	const alphabet = "abcdefghijkmnopqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789!@#$%^&*()-_=+"
+	// Keep generated passwords DSN-safe because attachments are surfaced as raw
+	// connection strings to applications that may not decode escaped credentials.
+	const alphabet = "abcdefghijkmnopqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789-_"
 	var out strings.Builder
 	for i := 0; i < length; i++ {
 		out.WriteByte(alphabet[rand.IntN(len(alphabet))])
 	}
 	return out.String()
+}
+
+func mariaDBDSN(user, password, host string, port int, database string) string {
+	cfg := mysql.Config{
+		User:   user,
+		Passwd: password,
+		Net:    "tcp",
+		Addr:   fmt.Sprintf("%s:%d", host, port),
+		DBName: database,
+		Params: map[string]string{
+			"parseTime": "true",
+		},
+	}
+	return cfg.FormatDSN()
 }
 
 func escapeSQLLiteral(value string) string {
