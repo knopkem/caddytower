@@ -33,6 +33,9 @@ func TestMariaDBDSNPreservesRawPassword(t *testing.T) {
 	if cfg.Passwd != password {
 		t.Fatalf("cfg.Passwd = %q, want %q", cfg.Passwd, password)
 	}
+	if !cfg.AllowNativePasswords {
+		t.Fatal("expected allowNativePasswords to be enabled")
+	}
 }
 
 func TestRandomPasswordUsesDSNSafeCharacters(t *testing.T) {

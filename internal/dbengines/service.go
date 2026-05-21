@@ -658,11 +658,12 @@ func randomPassword(length int) string {
 
 func mariaDBDSN(user, password, host string, port int, database string) string {
 	cfg := mysql.Config{
-		User:   user,
-		Passwd: password,
-		Net:    "tcp",
-		Addr:   fmt.Sprintf("%s:%d", host, port),
-		DBName: database,
+		User:                 user,
+		Passwd:               password,
+		Net:                  "tcp",
+		Addr:                 fmt.Sprintf("%s:%d", host, port),
+		DBName:               database,
+		AllowNativePasswords: true,
 		Params: map[string]string{
 			"parseTime": "true",
 		},
