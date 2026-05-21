@@ -832,10 +832,16 @@ func TestRedeployHealthCheckFailureAutoRollsBack(t *testing.T) {
 	}
 	initialPin := project.Deploys[0].ImageDigest
 
+	fakeNow := time.Unix(0, 0)
+	svc.now = func() time.Time { return fakeNow }
+	svc.wait = func(context.Context, time.Duration) error {
+		fakeNow = fakeNow.Add(time.Second)
+		return nil
+	}
 	attempts := 0
 	svc.checkHTTP = func(context.Context, string, time.Duration) error {
 		attempts++
-		if attempts <= 3 {
+		if attempts <= 7 {
 			return errors.New("boom")
 		}
 		return nil
@@ -857,6 +863,63 @@ func TestRedeployHealthCheckFailureAutoRollsBack(t *testing.T) {
 	}
 	if redeployed.ID != "" {
 		t.Fatalf("redeployed = %#v, want zero value on failure", redeployed)
+	}
+}
+
+func TestRedeployHealthCheckAllowsSlowStartWithinStartupWindow(t *testing.T) {
+	t.Parallel()
+
+	stateStore := openProjectsStore(t)
+	docker := &fakeDocker{}
+	caddy := &fakeCaddy{}
+	svc := New(config.Config{RootDomain: "example.com"}, stateStore, nil, docker, caddy, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	svc.checkHTTP = func(context.Context, string, time.Duration) error { return nil }
+
+	project, err := svc.CreateWebProject(context.Background(), WebProjectInput{
+		Name:                      "Demo",
+		Slug:                      "demo",
+		ImageRef:                  "ghcr.io/example/demo:latest",
+		Subdomain:                 "demo",
+		InternalPort:              3000,
+		HealthCheckPath:           "/ready",
+		HealthCheckTimeoutSeconds: 2,
+	}, "")
+	if err != nil {
+		t.Fatalf("CreateWebProject() error = %v", err)
+	}
+
+	fakeNow := time.Unix(0, 0)
+	svc.now = func() time.Time { return fakeNow }
+	svc.wait = func(context.Context, time.Duration) error {
+		fakeNow = fakeNow.Add(time.Second)
+		return nil
+	}
+	attempts := 0
+	svc.checkHTTP = func(context.Context, string, time.Duration) error {
+		attempts++
+		if attempts <= 3 {
+			return errors.New("warming up")
+		}
+		return nil
+	}
+
+	redeployed, err := svc.RedeployProject(context.Background(), project.ID, "")
+	if err != nil {
+		t.Fatalf("RedeployProject() error = %v", err)
+	}
+	if redeployed.ImageRef != "ghcr.io/example/demo:latest" {
+		t.Fatalf("redeployed.ImageRef = %q", redeployed.ImageRef)
+	}
+
+	current, _, getErr := svc.GetProject(context.Background(), project.ID)
+	if getErr != nil {
+		t.Fatalf("GetProject() error = %v", getErr)
+	}
+	if current.ImageRef != "ghcr.io/example/demo:latest" {
+		t.Fatalf("current.ImageRef = %q", current.ImageRef)
+	}
+	if len(current.Deploys) > 0 && current.Deploys[0].Trigger == "auto-rollback" {
+		t.Fatalf("deploy history = %#v", current.Deploys)
 	}
 }
 
@@ -949,7 +1012,7 @@ func (f *fakeDocker) Exec(context.Context, string, []string, []string, io.Writer
 
 type fakeCaddy struct {
 	managedHosts []string
-	lastRoutes    []caddyadmin.HTTPRoute
+	lastRoutes   []caddyadmin.HTTPRoute
 	pingErr      error
 	rawConfig    json.RawMessage
 	getConfigErr error

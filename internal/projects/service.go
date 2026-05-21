@@ -99,6 +99,8 @@ type Service struct {
 	lookupCNAME   func(context.Context, string) (string, error)
 	lookupHost    func(context.Context, string) ([]string, error)
 	checkHTTP     func(context.Context, string, time.Duration) error
+	now           func() time.Time
+	wait          func(context.Context, time.Duration) error
 	deployMu      sync.RWMutex
 	deploySubs    map[string]map[chan DeployEvent]struct{}
 }
@@ -364,6 +366,8 @@ func New(cfg config.Config, stateStore *store.Store, secretService *secrets.Serv
 			}
 			return nil
 		},
+		now:        time.Now,
+		wait:       waitForDuration,
 		deploySubs: map[string]map[chan DeployEvent]struct{}{},
 		newCloudflare: func(token string) (cloudflareClient, error) {
 			return cloudflare.New(token)
@@ -676,10 +680,10 @@ func expectedManagedRoutes(settings Settings, projectList []Project, httpAddr st
 	routes := make([]caddyadmin.HTTPRoute, 0, len(projectList)+1)
 	if adminHost := adminHostname(settings.RootDomain); adminHost != "" {
 		routes = append(routes, caddyadmin.HTTPRoute{
-			Host:       adminHost,
-			MatchType:  httpRouteMatchHost,
-			Upstreams:  []string{controllerContainerName + ":" + controllerPort(httpAddr)},
-			Priority:   -1,
+			Host:      adminHost,
+			MatchType: httpRouteMatchHost,
+			Upstreams: []string{controllerContainerName + ":" + controllerPort(httpAddr)},
+			Priority:  -1,
 		})
 	}
 
@@ -2730,23 +2734,42 @@ func (s *Service) projectHealthURL(project Project) string {
 
 func (s *Service) waitForProjectHealthy(ctx context.Context, project Project, targetURL string) error {
 	timeout := time.Duration(normalizedHealthTimeout(project.HealthCheckPath, project.HealthCheckTimeoutSeconds)) * time.Second
+	startupWindow := timeout * 3
+	deadline := s.now().Add(startupWindow)
 	var lastErr error
-	for attempt := 1; attempt <= 3; attempt++ {
-		if attempt > 1 {
-			select {
-			case <-ctx.Done():
-				return ctx.Err()
-			case <-time.After(time.Second):
-			}
-		}
+	for attempt := 1; ; attempt++ {
 		if err := s.checkHTTP(ctx, targetURL, timeout); err == nil {
 			return nil
 		} else {
 			lastErr = err
-			s.emitDeployEvent(project.ID, "health-check", fmt.Sprintf("Attempt %d/3 failed: %s", attempt, err.Error()), "running")
+			remaining := deadline.Sub(s.now())
+			if remaining <= 0 {
+				return fmt.Errorf("health check failed after %d attempts over %s: %w", attempt, startupWindow, lastErr)
+			}
+			s.emitDeployEvent(project.ID, "health-check", fmt.Sprintf("Attempt %d failed: %s", attempt, err.Error()), "running")
+			waitFor := time.Second
+			if remaining < waitFor {
+				waitFor = remaining
+			}
+			if err := s.wait(ctx, waitFor); err != nil {
+				return err
+			}
 		}
 	}
-	return fmt.Errorf("health check failed after 3 attempts: %w", lastErr)
+}
+
+func waitForDuration(ctx context.Context, delay time.Duration) error {
+	if delay <= 0 {
+		return nil
+	}
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
 }
 
 func runtimeWarnings(snapshot ProjectRuntimeSnapshot) []string {
